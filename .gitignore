@@ -1,0 +1,17 @@
+# build output and local work dirs
+dist/
+build/
+dev/
+out/
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# local replay files
+*.wrpl
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
