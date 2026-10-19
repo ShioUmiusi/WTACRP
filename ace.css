@@ -1,0 +1,71 @@
+/* =============================================================================
+ * ace.css —— 场景基底样式（由 index.html 引入）
+ * -----------------------------------------------------------------------------
+ * 只负责：深藏蓝底、舞台铺满、canvas 铺满且不糊、场景配色变量。
+ * 控制条 / 角落读数 / 帮助面板的样式在 mission.css，这里不越界。
+ * 配色以契约 §8.1 / §8.5 为准（UI 主色蓝 #4DA6FF，场景底为深藏蓝渐层）。
+ * ========================================================================== */
+
+:root {
+  /* 场景配色（与 three3d/scene.js 里的常量保持一致，供读数与控制条取用） */
+  --ace-own: #5BFF8A;        /* 本机航迹：绿（与队友同色） */
+  --ace-squad: #5BFF8A;      /* 队友：绿 */
+  --ace-ally: #3D8BFF;       /* 其他友军：饱和蓝 */
+  --ace-ally-core: #8FC2FF;  /* 友军航迹亮核 */
+  --ace-enemy: #FF3B47;      /* 敌军：红 */
+  --ace-unknown: #6B7C8C;    /* 侧别未知：灰蓝 */
+  --ace-ground: #C9702A;     /* 敌方地面单位：暗橙方块 */
+  --ace-ground-friend: #DCE9F5; /* 友方/未知地面单位：冷白描边 */
+  --ace-ground-stub: #3D8BFF;   /* 地面方块连回网格的细竖线：蓝 */
+  --ace-shot: #FFD9A0;       /* 发射点：橙白 */
+  --ace-kill: #FF8A3D;       /* 击杀标记：橙 X */
+  --ace-kill-own: #FFC24A;   /* 本机击杀：亮橙 X */
+  --ace-grid: #5A7A99;       /* 网格：细冷白蓝 */
+  --ace-label: #DCE9F5;      /* 标签文字：冷白 */
+  --ace-label-ally: #8FC2FF; /* 友军标签：淡蓝 */
+  --ace-label-enemy: #FF5A66;/* 敌军标签：红 */
+
+  /* UI 主色（契约 §8.1：控件 / 读数 / 进度条 / 边框） */
+  --ace-ui: #4DA6FF;
+  --ace-ui-2: #2E6BFF;
+
+  /* 背景：深藏蓝渐层（不是纯黑） */
+  --ace-bg-top: #050A12;
+  --ace-bg-bottom: #08111C;
+
+  --ace-font: Consolas, "Cascadia Mono", ui-monospace, monospace;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: linear-gradient(180deg, var(--ace-bg-top) 0%, var(--ace-bg-bottom) 100%);
+  color: var(--ace-label);
+  font-family: var(--ace-font);
+  overflow: hidden;
+}
+
+#stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: linear-gradient(180deg, var(--ace-bg-top) 0%, var(--ace-bg-bottom) 100%);
+  overflow: hidden;
+}
+
+#scene {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--ace-bg-top);
+  /* free 机位要拖拽，光标给个提示即可 */
+  touch-action: none;
+}
+
+/* 场景相关的少量工具类，按需使用 */
+.ace-hidden { display: none !important; }
+.ace-mono { font-family: var(--ace-font); }

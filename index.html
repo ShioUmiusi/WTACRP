@@ -1,0 +1,29 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ACE-COMBAT 回放 · 极简</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- data: 图标不产生任何网络请求 -->
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="ace.css">
+<link rel="stylesheet" href="mission.css?v=3">
+<!-- three.js r186 是 ES module，渲染器里的 import 'three' 需要这张映射表 -->
+<script type="importmap">{"imports":{"three":"./vendor/three/three.module.js"}}</script>
+</head>
+<body>
+<div id="stage">
+  <canvas id="scene"></canvas>
+  <div id="corner"></div>
+  <div id="controls"></div>
+  <div id="help" hidden></div>
+</div>
+<!-- 固定加载顺序。scene3d3-loader.js 是经典脚本桥：它先挂 window.ACEScene 代理，
+     再以 ES module 动态加载 three.js 渲染器（three 必须走 module）。 -->
+<script src="mission-data.js?v=3"></script>
+<script src="attitude-data.js?v=3"></script>
+<script src="terrain/air_skyscraper_city_landmask.js?v=1"></script>
+<script src="scene3d3-loader.js?v=41"></script>
+<script src="mission.js?v=6"></script>
+</body>
+</html>

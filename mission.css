@@ -1,0 +1,307 @@
+/* ============================================================================
+ * ACE-COMBAT 极简回放 —— 页面骨架样式（契约 v6 §3.1 / §3.3 / §8.1 / §8.3）
+ *
+ * 只负责 #stage / #corner（含右上角齿轮与呼号面板）/ #controls / #help 的布局与外观。
+ * 黑底网格、航迹、标记、银幕化（letterbox/扫描线/暗角）由 scene3d.js 与 ace.css
+ * 负责，这里不重复做，也不引入任何外部字体、图片或 url()。
+ *
+ * 配色按 §8.1：UI 主色蓝 #4DA6FF、次要 #2E6BFF；击杀刻度用橙 #FF8A3D / #FFC24A。
+ * ==========================================================================*/
+:root {
+  --ace-blue: #4DA6FF;
+  --ace-blue-2: #2E6BFF;
+  --ace-blue-dim: rgba(150, 196, 255, .75);
+  --ace-text: #d6e8ff;
+  --ace-bright: #eaf4ff;
+  --ace-panel: rgba(4, 10, 20, .68);
+  --ace-line: rgba(77, 166, 255, .30);
+  --ace-kill: #FF8A3D;
+  --ace-kill-own: #FFC24A;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #000;
+  color: var(--ace-text);
+  overflow: hidden;
+  font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+#stage { position: fixed; inset: 0; }
+
+#scene {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+/* ---------- 右上角：齿轮 + 角落读数 + 呼号面板 ---------- */
+#corner {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  max-width: min(620px, 46vw);
+  text-align: right;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ace-text);
+  pointer-events: none;   /* 只有齿轮与面板吃鼠标事件 */
+  text-shadow: 0 0 8px rgba(0, 0, 0, .95), 0 0 2px rgba(0, 0, 0, .9);
+}
+
+.ace-gear-row { display: flex; justify-content: flex-end; margin-bottom: 7px; }
+.ace-gear {
+  pointer-events: auto;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* H 键切换的就是这一块；齿轮不跟着隐藏 */
+.ace-readout.ace-hidden { display: none; }
+
+.ace-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 1px;
+  justify-items: end;
+}
+/* display:contents 让每行的 key/value 直接落到两列网格里，长文本换行也不会把标签挤歪 */
+.ace-row { display: contents; }
+.ace-row[hidden] { display: none !important; }
+.ace-k { color: var(--ace-blue-dim); text-align: right; }
+.ace-v { color: var(--ace-bright); font-variant-numeric: tabular-nums; text-align: right; }
+.ace-dim .ace-k, .ace-dim .ace-v { color: rgba(150, 196, 255, .8); font-size: 11.5px; }
+.ace-src {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: rgba(150, 196, 255, .76);
+  white-space: normal;
+}
+.ace-warn {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #FFB36A;
+  text-align: left;
+  white-space: pre-line;
+  border-left: 2px solid rgba(255, 138, 61, .7);
+  padding-left: 8px;
+}
+.ace-warn[hidden] { display: none; }
+
+/* ---------- 呼号面板（齿轮打开） ---------- */
+.ace-panel {
+  pointer-events: auto;
+  position: relative;
+  z-index: 2;
+  margin-top: 20px;                 /* 往下挪一点，避开画面里的端点标签 */
+  width: min(340px, 92vw);
+  padding: 11px 13px;
+  /* 半透明底衬：比原来更透一层 + 背景模糊，压在场景上也不和标签糊在一起 */
+  background: rgba(4, 12, 24, .86);
+  border: 1px solid rgba(77, 166, 255, .45);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 14px 46px rgba(0, 0, 0, .85);
+  backdrop-filter: blur(3px);
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ace-panel[hidden] { display: none !important; }
+.ace-panel-hd { color: var(--ace-blue); font-size: 11px; letter-spacing: .09em; margin-bottom: 8px; }
+.ace-panel-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ace-panel-row.ace-panel-col { display: block; }
+.ace-panel-k { color: var(--ace-blue-dim); font-size: 11.5px; white-space: nowrap; }
+.ace-panel-col .ace-panel-k { display: block; margin-bottom: 4px; }
+.ace-input {
+  flex: 1 1 auto;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  background: rgba(77, 166, 255, .07);
+  border: 1px solid rgba(77, 166, 255, .35);
+  border-radius: 2px;
+  color: var(--ace-bright);
+  font: inherit;
+  font-size: 12px;
+}
+.ace-input:focus {
+  outline: none;
+  border-color: rgba(77, 166, 255, .9);
+  background: rgba(77, 166, 255, .13);
+}
+.ace-area { resize: vertical; min-height: 62px; line-height: 1.35; }
+.ace-panel-note { color: rgba(150, 196, 255, .72); font-size: 11px; line-height: 1.45; margin: 2px 0 6px; }
+.ace-panel-bind { color: #9CCBFF; }
+.ace-panel-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* 阵营显示：推定 / 反转 / 未知 */
+.ace-panel-modes { flex-wrap: wrap; }
+.ace-mode { flex: 1 1 0; padding: 5px 0; text-align: center; }
+
+/* ---------- 底部播放控制条 ---------- */
+#controls {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  width: min(1180px, 94vw);
+  pointer-events: none;
+}
+.ace-bar {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--ace-panel);
+  border: 1px solid var(--ace-line);
+  border-radius: 3px;
+  backdrop-filter: blur(3px);
+}
+.ace-btn {
+  appearance: none;
+  background: rgba(77, 166, 255, .07);
+  border: 1px solid var(--ace-line);
+  border-radius: 2px;
+  color: #9ccbff;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 6px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.ace-btn:hover { background: rgba(77, 166, 255, .18); border-color: rgba(77, 166, 255, .68); }
+.ace-btn:focus-visible { outline: 1px solid rgba(77, 166, 255, .9); outline-offset: 1px; }
+.ace-btn.is-on {
+  background: rgba(77, 166, 255, .24);
+  border-color: rgba(77, 166, 255, .95);
+  color: var(--ace-bright);
+}
+.ace-play { min-width: 40px; }
+.ace-speeds { display: flex; gap: 4px; }
+.ace-alt { letter-spacing: .02em; }
+
+.ace-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 18px;
+  min-width: 160px;
+  cursor: pointer;
+  touch-action: none;
+}
+.ace-track:focus-visible { box-shadow: 0 0 0 1px rgba(77, 166, 255, .7); }
+.ace-rail {
+  position: absolute;
+  left: 0; right: 0; top: 8px;
+  height: 2px;
+  background: rgba(77, 166, 255, .20);
+}
+.ace-fill {
+  position: absolute;
+  left: 0; top: 8px;
+  height: 2px;
+  width: 0;
+  background: linear-gradient(90deg, var(--ace-blue-2), var(--ace-blue));
+  box-shadow: 0 0 9px rgba(77, 166, 255, .85);
+}
+.ace-knob {
+  position: absolute;
+  top: 5px; left: 0;
+  width: 8px; height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: #f2f8ff;
+  box-shadow: 0 0 10px rgba(77, 166, 255, .95);
+}
+.ace-ticks { position: absolute; left: 0; right: 0; top: 0; height: 18px; pointer-events: none; }
+.ace-tick {
+  position: absolute;
+  top: 3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  background: var(--ace-kill);
+  box-shadow: 0 0 6px rgba(255, 138, 61, .85);
+}
+.ace-tick.is-player {
+  top: 2px;
+  height: 14px;
+  background: var(--ace-kill-own);
+  box-shadow: 0 0 8px rgba(255, 194, 74, .95);
+}
+.ace-time {
+  font-size: 12px;
+  color: #9ccbff;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 138px;
+  text-align: right;
+}
+.ace-diag { font-size: 11px; color: #FFB36A; white-space: nowrap; }
+.ace-hint { font-size: 11px; color: rgba(140, 190, 255, .48); white-space: nowrap; }
+
+/* ---------- 帮助（? 键切换） ---------- */
+#help {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: min(680px, 92vw);
+  pointer-events: none;
+}
+#help[hidden] { display: none !important; }
+.ace-help-box {
+  pointer-events: auto;
+  max-height: 74vh;
+  overflow: auto;
+  padding: 12px 14px;
+  background: rgba(3, 9, 18, .94);
+  border: 1px solid rgba(77, 166, 255, .40);
+  border-radius: 3px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .8);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.ace-help-hd {
+  margin: 10px 0 5px;
+  color: var(--ace-blue);
+  font-size: 11px;
+  letter-spacing: .1em;
+}
+.ace-help-hd:first-child { margin-top: 0; }
+.ace-help-grid { display: grid; grid-template-columns: 112px 1fr; gap: 2px 10px; }
+.ace-help-k { color: var(--ace-bright); }
+.ace-help-v { color: rgba(190, 214, 255, .86); }
+.ace-help-li { color: rgba(190, 214, 255, .84); }
+.ace-help-foot { margin-top: 9px; color: rgba(140, 190, 255, .5); font-size: 11px; }
+
+@media (max-width: 900px) {
+  .ace-hint { display: none; }
+  .ace-diag:empty { display: none; }
+  .ace-time { min-width: 0; }
+  #corner { max-width: 70vw; }
+}
+
+/* 面板：只读值、子标题、调试开关 */
+.ace-panel-val{color:#cfe3f5;font:12px Consolas,monospace;opacity:.9}
+.ace-panel-sub{margin-top:10px;padding-top:8px;border-top:1px solid rgba(120,170,220,.25);font-size:11px;letter-spacing:.08em;color:#7fa6c8}
+.ace-debug{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.ace-debug .ace-btn{padding:3px 8px;font-size:11px;opacity:.45}
+.ace-debug .ace-btn.on{opacity:1;border-color:#3d8bff;background:#12324d;color:#dff1ff}
