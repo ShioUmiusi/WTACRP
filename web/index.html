@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ACE-COMBAT 回放 · 浏览器内解析</title>
+<!-- 页面的样式与渲染/播放逻辑复用 mission.js 与 three3d/scene.js -->
+<link rel="stylesheet" href="../ace.css">
+<link rel="stylesheet" href="../mission.css">
+<!-- three.js r186 是 ES module，three3d/scene.js 里的 import 'three' 需要这张映射表。
+     必须在任何 module 之前；只指向本机文件（../vendor/three/three.module.js），不联网。 -->
+<script type="importmap">{"imports":{"three":"../vendor/three/three.module.js"}}</script>
+<style>
+  /* ---- 上传层 ---- */
+  #upload{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 40%,#0a1420 0%,#04070b 70%);
+    font:13px/1.7 Consolas,"Cascadia Mono",ui-monospace,monospace;color:#DCE9F5}
+  #upload.hidden{display:none}
+  #upload .card{width:min(620px,88vw);border:1px solid #1d3a57;background:#070d15;
+    padding:24px 28px;box-shadow:0 0 40px rgba(77,166,255,.08);transition:border-color .15s,box-shadow .15s}
+  #upload .head{display:flex;align-items:center;gap:10px}
+  #upload .icon{width:22px;height:22px;flex:0 0 22px;display:flex;align-items:center;justify-content:center;
+    border:1px solid #2E6BFF;color:#4DA6FF;font-size:12px}
+  #upload h1{margin:0;font-size:17px;letter-spacing:.14em;color:#4DA6FF;font-weight:600}
+  #upload .sub{color:#6B7C8C;margin:6px 0 18px}
+  #upload-drop{border:1px dashed #2E6BFF;padding:24px 18px;text-align:center;color:#9fb6cb;cursor:pointer;
+    transition:background .15s,border-color .15s}
+  #upload-drop.over{background:rgba(46,107,255,.10);border-color:#4DA6FF;color:#DCE9F5}
+  #upload-drop b{color:#4DA6FF;font-weight:600}
+  /* 进度：解析期间一直可见 */
+  #upload-progress{margin-top:18px}
+  #upload-progress .line{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px}
+  #upload-stage{color:#4DA6FF;letter-spacing:.06em}
+  #upload-pct{color:#DCE9F5;font-weight:700}
+  #upload-bar{height:6px;background:#12202e;overflow:hidden}
+  #upload-bar > i{display:block;height:100%;width:0;background:#4DA6FF;transition:width .15s linear}
+  #upload-note{color:#8ea6bb;min-height:1.7em;margin-top:8px;word-break:break-all}
+  /* 完成态 */
+  #upload.is-done #upload-bar > i{background:#5BFF8A}
+  #upload.is-done #upload-stage{color:#5BFF8A}
+  /* 错误态：整块切成错误视觉 */
+  #upload.is-error .card{border-color:#FF3B47;box-shadow:0 0 40px rgba(255,59,71,.16)}
+  #upload.is-error .icon{border-color:#FF3B47;color:#FF3B47}
+  #upload.is-error #upload-drop{display:none}
+  #upload.is-error #upload-progress{display:none}
+  #errbox{display:none}
+  #upload.is-error #errbox{display:block}
+  #err-title{color:#FF6A2B;font-weight:700;letter-spacing:.06em;font-size:15px;margin-bottom:8px}
+  #err-detail{color:#ffd9c7}
+  #err-retry{margin-top:16px;padding:7px 16px;border:1px solid #FF3B47;background:rgba(255,59,71,.10);
+    color:#ffb3b8;cursor:pointer;font:13px Consolas,"Cascadia Mono",ui-monospace,monospace}
+  #err-retry:hover{background:rgba(255,59,71,.20)}
+  #upload-foot{margin-top:16px;color:#5d7286;font-size:12px}
+  #upload-foot a{color:#4DA6FF;text-decoration:none}
+  #upload-again{display:none;position:fixed;right:14px;bottom:72px;z-index:40;padding:5px 12px;
+    border:1px solid #2E6BFF;background:rgba(7,13,21,.82);color:#4DA6FF;cursor:pointer;
+    font:12px Consolas,ui-monospace,monospace}
+  #upload-again.on{display:block}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="scene"></canvas>
+  <div id="corner"></div>
+  <div id="controls"></div>
+  <div id="help"></div>
+</div>
+
+<button id="upload-again" type="button">换一个 .wrpl</button>
+
+<div id="upload" class="is-idle">
+  <div class="card">
+    <div class="head">
+      <span class="icon" id="upload-icon">&#9670;</span>
+      <h1>ACE-COMBAT · 浏览器内解析</h1>
+    </div>
+    <div class="sub">本机解压与解码：文件<b>不会</b>上传到服务器，页面本身不联网。</div>
+
+    <div id="upload-drop">
+      把 <b>.wrpl</b> 回放拖到这里，或 <b>点击选择文件</b>
+      <input id="upload-file" type="file" accept=".wrpl,.bin" hidden>
+    </div>
+
+    <div id="upload-progress">
+      <div class="line">
+        <span id="upload-stage">等待文件</span>
+        <span id="upload-pct">0%</span>
+      </div>
+      <div id="upload-bar"><i></i></div>
+      <div id="upload-note">等待回放文件…</div>
+    </div>
+
+    <div id="errbox">
+      <div id="err-title">解析失败</div>
+      <div id="err-detail"></div>
+      <div id="err-hint"></div>
+      <button id="err-retry" type="button">重新选择文件</button>
+    </div>
+
+    <div id="upload-foot">
+      解析：<code>wrpl-parse.js</code> + <code>vendor/fzstd.min.js</code>（MIT）。
+      格式理解参考 <a href="https://github.com/maxsupermanhd/wrpl-inspector" target="_blank" rel="noopener">wrpl-inspector</a>（AGPL-3.0）。
+    </div>
+  </div>
+</div>
+
+<!-- 自带 zstd 解码：Chromium 的 DecompressionStream 不支持 'zstd' -->
+<script src="vendor/fzstd.min.js"></script>
+<script src="wrpl-parse.js"></script>
+<!-- 渲染：three.js 渲染器（ES module，由经典脚本桥 scene3d3-loader.js 动态加载，
+     路径相对 loader 自身 → ../three3d/scene.js）。本局预计算的 terrain/*_landmask.js 与
+     attitude-data.js **不引**（上传页要通用）：飘带坡度由 wrpl-parse.js 解析后挂到
+     window.ACE_ATTITUDE。 -->
+<script src="../scene3d3-loader.js?v=41"></script>
+<script src="../mission.js"></script>
+
+<script>
+/* 本页的粘合逻辑（上传 → 解析 → 交给 ACEUI.mount）。业务规则不在这里。
+ *
+ * 判定口径（只加注释，不改动渲染逻辑）：
+ * `ACEUI.state()` 在本页**加载完成即可用**，mount 前后都返回完整对象，共 10 个键：
+ *   met / t / playing / speed / own / contacts / ownMissing / options / recentKills / identity
+ * 实测（本页 HTTP 打开）：mount 前 { met:0, playing:false, own:null, contacts:[] }；
+ * mount 后 { playing:true, contacts:93, own:13 个通道 }。
+ * 也就是说本页没有「mount 前 state() 返回空对象」这种形态；若在别处量到空对象，
+ * 请先确认量的是哪一个 URL、以及 ACEUI 是否已经加载（未加载时 ACEUI 本身是 undefined，
+ * 不是空对象）。 */
+(function () {
+  'use strict';
+  var box = document.getElementById('upload');
+  var icon = document.getElementById('upload-icon');
+  var drop = document.getElementById('upload-drop');
+  var input = document.getElementById('upload-file');
+  var bar = document.querySelector('#upload-bar > i');
+  var stageEl = document.getElementById('upload-stage');
+  var pctEl = document.getElementById('upload-pct');
+  var note = document.getElementById('upload-note');
+  var errTitle = document.getElementById('err-title');
+  var errDetail = document.getElementById('err-detail');
+  var errHint = document.getElementById('err-hint');
+  var retry = document.getElementById('err-retry');
+  var again = document.getElementById('upload-again');
+  var busy = false;
+
+  /* 解析阶段 → 用户可读的阶段名（数值由 WRPLParse 的进度回调给） */
+  var STAGES = {
+    container: '读取容器头', zstd: '解压包流', packets: '切分包帧', fm: '解析航迹',
+    props: '读取本机属性表', kills: '解析击杀包', ecs: '构建地面点', blk: '解析结算表',
+    own: '认领本机', side: '判定阵营', units: '组装目标', done: '完成'
+  };
+
+  function setState(s) { box.className = s; }
+  function setIcon(t) { icon.textContent = t; }
+  function setBar(pct) { bar.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + '%'; }
+  function setStage(name, pct) {
+    stageEl.textContent = name;
+    pctEl.textContent = Math.round(pct) + '%';
+  }
+
+  /** 错误态：标题一行 + 明细一行（原因 + 建议动作）+ 重新选择文件。 */
+  function fail(title, detail, hint) {
+    setState('is-error');
+    setIcon('\u2715');
+    errTitle.textContent = title;
+    errDetail.textContent = detail;
+    errHint.textContent = hint || '';
+    setBar(0);
+    busy = false;
+  }
+
+  /** 不支持的回放格式：用户口径（不提"文件损坏"）。 */
+  function failUnsupported(tech) {
+    fail('不支持的回放格式',
+         '该回放可能是旧版本游戏生成的，本工具只支持当前版本的回放格式。',
+         tech ? ('技术细节：' + tech) : '');
+  }
+
+  WRPLParse.progress(function (p) {
+    var name = STAGES[p.phase] || p.phase;
+    setStage(name, p.pct);
+    setBar(p.pct);
+    if (p.note) note.textContent = p.note;
+  });
+
+  function summarize(m) {
+    var c = (m.meta && m.meta.counts) || {};
+    return [
+      '窗口 ' + m.meta.window.t1.toFixed(1) + ' s',
+      '本机 ' + c.ownSamples + ' 采样',
+      '航迹 ' + c.airTracks + '（空中）/ ' + c.groundTracks + '（地面）',
+      '击杀 ' + c.kills, '发射点 ' + c.shots,
+      '跑道 ' + c.runways, '机场 ' + c.airfields
+    ].join(' · ');
+  }
+
+  /* 地形素材按地图名加载（服务器静态资源；回放文件本身仍然不上传）。
+   * 硬闸：素材自报的 map 必须与本局关卡一致、crs 必须是 replay-world-meters，
+   * 否则整层留空 —— 别的地图的等高线混进来等于给本局编造地形。 */
+  /* 型号/类别数据表（服务器静态素材）：按内部名查显示名与类别。
+   * 拿不到就保留解析器内嵌的 37 条兜底；查到才替换，绝不编造。 */
+  /* 只去掉**已知绰号**后缀（不按"尾词有没有数字"机械砍）：
+   * 机械规则会削掉真实型号变体（`BF 109 E → BF 109`、`SPITFIRELF MKIX → SPITFIRELF`），
+   * 那是上游实测反证过的；这里用白名单，命中不了就原样显示。 */
+  var NICK_SUFFIX = [
+    " PHANTOM II", " PHANTOM", " STRIKE EAGLE", " EAGLE", " SUPER HORNET", " HORNET",
+    " TOMCAT", " VIPER", " FALCON", " RAPTOR", " LIGHTNING II", " THUNDERBOLT II",
+    " THUNDERBOLT", " TRAM", " INTERNATIONAL", " SEA HARRIER", " HARRIER", " WARTHOG"
+  ];
+  function modelOnly(name) {
+    var s0 = String(name || "").replace(/["']/g, " ").replace(/\s+/g, " ").trim();
+    if (!s0) { return s0; }
+    var up = s0.toUpperCase();
+    for (var i = 0; i < NICK_SUFFIX.length; i++) {
+      var suf = NICK_SUFFIX[i];
+      if (up.length > suf.length && up.slice(-suf.length) === suf) {
+        return s0.slice(0, s0.length - suf.length).trim().toUpperCase();
+      }
+    }
+    return up;
+  }
+
+  /* 静态资源基路径（可由服务器/CI 注入，默认用仓库里的 terrain/）。
+   * 直接指向地图侧产物目录即可，不必复制（在页面脚本之前赋值即可）：
+   *   window.ACE_TERRAIN_BASE = './warthunder-maps/dataset/contours/';
+   *   window.ACE_MASK_BASE    = './warthunder-maps/dataset/landmask/';
+   * 注意：注释里不能出现字面的 script 结束标签，否则会提前闭合本脚本（踩过）。 */
+  var TERRAIN_BASE = window.ACE_TERRAIN_BASE || "../terrain/";
+  var MASK_BASE = window.ACE_MASK_BASE || "../terrain/";
+
+  var _TABLES = null;
+  function loadTablesIfAny(mission) {
+    if (!mission || !(mission.units || []).length) { return Promise.resolve(); }
+    if (!_TABLES) {
+      _TABLES = Promise.all([
+        fetch('../tables/vehicle_names.json').then(function (r) { return r.ok ? r.json() : {}; })
+          .catch(function () { return {}; }),
+        fetch('../tables/vehicle_categories.json').then(function (r) { return r.ok ? r.json() : {}; })
+          .catch(function () { return {}; })
+      ]).then(function (v) { return { names: v[0] || {}, cats: v[1] || {} }; });
+    }
+    return _TABLES.then(function (t) {
+      var nNamed = 0, nCat = 0, miss = {};
+      (mission.units || []).forEach(function (u) {
+        var v = u.vehicle;
+        if (!v) { return; }
+        /* 名字/类别的回退链：先用回放内部名查表，再试 unitClassName，
+         * 最后用模板名兜底（tank→TANK、fortification→FORTIFICATION…）。
+         * 绝不直接显示 UNKNOWN（那是"表里没有"，不是"阵营未知"）。 */
+        var uc = u.unitClassName || null;
+        var nm = t.names[v] || (uc ? t.names[uc] : null);
+        var ct = t.cats[v] || (uc ? t.cats[uc] : null);
+        var TPL_CAT = { tank: 'TANK', fortification: 'FORTIFICATION', structure: 'FORTIFICATION',
+                        scenery: 'SCENERY', ship: 'SHIP' };
+        if (!ct) { ct = TPL_CAT[String(u.template || '').toLowerCase()] || null; }
+        if (!nm) {
+          /* 表里没有：从内部名取最后一段、去下划线、大写 —— 好过显示 UNKNOWN */
+          var base2 = String(v).split('/').pop().replace(/_/g, ' ').trim().toUpperCase();
+          if (base2) { nm = base2; }
+        }
+        /* 显示约定：**飞机只显示型号**，砍掉尾部不含数字的词（F-4S PHANTOM II → F-4S、
+         * A-6E TRAM → A-6E）；地面/工事名保持原样（LIGHT BUNKER、ARTILLERY 不动）。 */
+        if (typeof nm === "string" && nm &&
+            (ct === 'FIGHTER' || ct === 'ATTACKER' || ct === 'BOMBER' || ct === 'HELI')) {
+          nm = modelOnly(nm);
+        }
+        if (typeof nm === "string" && nm && nm !== u.vehicleName) { u.vehicleName = nm; nNamed++; }
+        else if (!nm && !u.vehicleName && !u.hidden) { miss[v] = 1; }   /* 隐藏占位物不计入缺 */
+        if (typeof ct === "string" && ct) { u.vehicleCategory = ct; nCat++; }
+      });
+      var missKeys = Object.keys(miss);
+      if (mission.meta && mission.meta.limits) {
+        mission.meta.limits.push('型号：显示名/类别来自服务器数据表（tables/vehicle_names.json、' +
+          'tables/vehicle_categories.json），补全 ' + nNamed + ' 条显示名、' + nCat +
+          ' 条类别；表里没有的用回放内部名，不猜' +
+          (missKeys.length ? '（缺 ' + missKeys.slice(0, 6).join(', ') +
+            (missKeys.length > 6 ? ' …（共 ' + missKeys.length + ' 个）' : '') + '）' : '') + '。');
+      }
+    });
+  }
+
+  function loadTerrainIfAny(mission) {
+    /* 每次换回放都清掉上一张图的掩膜，避免串图 */
+    try { window.ACE_LANDMASK = null; } catch (e0) {}
+    var lvl = mission && mission.meta && mission.meta.replayHeader && mission.meta.replayHeader.level;
+    if (!lvl) { return Promise.resolve(); }
+    var map = String(lvl).split('/').pop().replace(/\.bin$/i, '');
+    if (!/^[A-Za-z0-9_]+$/.test(map)) { return Promise.resolve(); }
+    var norm = function (v) { return String(v || '').split('/').pop().replace(/\.bin$/i, ''); };
+
+    /* ① 等高线（可选） */
+    var _terrainHit = { contours: false, mask: false };
+    var pCont = fetch(TERRAIN_BASE + map + '_contours.json')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (tj) {
+        if (!tj || !tj.meta || tj.meta.crs !== 'replay-world-meters') { return; }
+        if (norm(tj.meta.map) !== map) { return; }     /* 别的地图不许混进来 */
+        _terrainHit.contours = true;
+        mission.terrain = { meta: tj.meta, contours: tj.contours || [],
+                            water: tj.water || [], coastlines: tj.coastlines || [] };
+        if (mission.meta && mission.meta.counts) {
+          mission.meta.counts.terrainContours = mission.terrain.contours.length;
+          mission.meta.counts.terrainWater = mission.terrain.water.length;
+          mission.meta.counts.terrainCoastlines = mission.terrain.coastlines.length;
+        }
+        if (mission.meta && mission.meta.limits) {
+          mission.meta.limits.push('地形：等高线来自服务器静态素材（' + map +
+            '，source=' + (tj.meta.source || '?') + '，bounds=' +
+            JSON.stringify(tj.meta.bounds || {}) + '），按地图名校验一致后加载。');
+        }
+
+        /* 权威机场数据（地图侧 dataset/contours 顶部新增的两块）：
+         *  - airfields[]: 跑道中心线（ends/长度/宽度/海拔/起飞方向）→ 转成渲染器要的 runways[]
+         *  - respawns[]: 重生点（每图上百个）→ 留给"瞬移/补给"与出生点标注用
+         * 回放自己也解出过一份（ECS 反推），但那份不全（本局 4 条 vs 权威 12 条），以权威版为准。 */
+        /* 权威数据里存在同位置重复（典型：`t2_airfield` 与 `t2_airfield_low` 中心重合），
+         * 直接全画会"多个跑道叠在一起"。这里按 250 m 去重，同一簇保留更长的那条。 */
+        var afs = [];
+        (tj.airfields || []).forEach(function (a) {
+          var c = a.center || [0, 0];
+          for (var ai = 0; ai < afs.length; ai++) {
+            var q = afs[ai].center || [0, 0];
+            if (Math.hypot(c[0] - q[0], c[1] - q[1]) <= 700) {
+              if ((a.lengthM || 0) > (afs[ai].lengthM || 0)) { afs[ai] = a; }
+              return;
+            }
+          }
+          afs.push(a);
+        });
+        if ((tj.airfields || []).length !== afs.length) {
+          var dropped = (tj.airfields || []).filter(function (a) {
+            return !afs.some(function (b) { return b === a; });
+          }).map(function (a) { return a.name; });
+          console.log('[airfield] 去重 %d → %d（700 m 内视为同一机场，合并/丢弃：%s）',
+            (tj.airfields || []).length, afs.length, dropped.join(', '));
+        }
+        if (afs.length) {
+          mission.runways = afs.map(function (a) {
+            var e0 = (a.ends && a.ends[0]) || a.center || [0, 0];
+            var e1 = (a.ends && a.ends[1]) || a.center || [0, 0];
+            return {
+              key: a.name, name: a.name, kind: a.kind || 'runway',
+              x1: e0[0], y1: e0[1], x2: e1[0], y2: e1[1],
+              z1: a.altM, z2: a.altM,
+              lengthM: a.lengthM, widthM: a.widthM,
+              headingDeg: a.headingDeg, takeoffHeadingDeg: a.takeoffHeadingDeg,
+              source: 'dataset-airfields'
+            };
+          });
+          mission.airfields = afs.map(function (a) {
+            return { key: a.name, name: a.name,
+                     x: (a.center || [0, 0])[0], y: (a.center || [0, 0])[1], z: a.altM };
+          });
+          mission.respawns = (tj.respawns || []).map(function (r) {
+            return { name: r.name, kind: r.kind, x: (r.pos || [0, 0])[0],
+                     y: (r.pos || [0, 0])[1], z: r.altM, source: r.source };
+          });
+          if (mission.meta && mission.meta.counts) {
+            mission.meta.counts.runways = mission.runways.length;
+            mission.meta.counts.airfields = mission.airfields.length;
+            mission.meta.counts.respawns = mission.respawns.length;
+          }
+          if (mission.meta && mission.meta.limits) {
+            mission.meta.limits.push('机场：跑道/重生点来自地图侧权威数据（' + map + '：跑道 ' +
+              mission.runways.length + ' 条、重生点 ' + mission.respawns.length +
+              ' 个），替换回放自身反推的那份（它不全）。');
+          }
+        }
+      })
+      .catch(function () { /* 拿不到就留空，不编 */ });
+
+    /* ② 陆地掩膜（可选；有它才有陆地填充色） */
+    var pMask = fetch(MASK_BASE + map + '_landmask.json')
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j) { return j; }
+        /* 地图侧 dataset/landmask 的命名是 <map>.json，这里兼容一下 */
+        return fetch(MASK_BASE + map + '.json')
+          .then(function (r2) { return r2.ok ? r2.json() : null; })
+          .catch(function () { return null; });
+      })
+      .then(function (lj) {
+        if (!lj || !lj.land || norm(lj.map) !== map) { return; }
+        _terrainHit.mask = true;
+        window.ACE_LANDMASK = lj;
+        if (mission.meta && mission.meta.limits) {
+          mission.meta.limits.push('地形：陆地掩膜来自服务器静态素材（' + map +
+            '，rowZero=' + (lj.land.rowZero || '?') + '，' + (lj.land.width | 0) + 'x' +
+            (lj.land.height | 0) + '），按地图名校验一致后加载。');
+        }
+      })
+      .catch(function () { /* 没有掩膜就不填陆地色，不编 */ });
+
+    return Promise.all([pCont, pMask]).then(function () {
+      /* 素材缺失要**明说**：既方便排查"地图没认出来"，也避免用户以为是我们解析失败 */
+      if (!_terrainHit.contours || !_terrainHit.mask) {
+        var missT = [];
+        if (!_terrainHit.contours) { missT.push('等高线'); }
+        if (!_terrainHit.mask) { missT.push('陆地掩膜'); }
+        if (mission.meta && mission.meta.limits) {
+          mission.meta.limits.push('地形：本局地图 ' + map + ' 缺少服务器素材（' + missT.join('、') +
+            '）→ 这几层不画，外框按回放自身数据推算；不影响航迹/单位/机场。');
+        }
+        console.warn('[terrain] 缺少素材：' + map + '（' + missT.join('、') + '）');
+      }
+    });
+  }
+
+  function start(file) {
+    if (busy) return;
+    if (!file) return;
+    if (!/\.(wrpl|bin)$/i.test(file.name || '')) {
+      fail('无法读取这个文件', '请选择 War Thunder 的 .wrpl 回放文件（文件名：' +
+        (file.name || '未知') + '）。', '');
+      return;
+    }
+    busy = true;
+    setState('is-busy');
+    setIcon('\u2026');
+    setStage('读取文件', 0);
+    setBar(0);
+    note.textContent = '读取文件…';
+    var t0 = performance.now();
+    var fr = new FileReader();
+    fr.onerror = function () {
+      fail('无法读取这个文件', '浏览器没能读完这个文件，请确认文件仍在原位置、且没有被其它程序占用。', '');
+    };
+    fr.onload = function () {
+      var buf = fr.result;
+      setStage('解压包流', 1);
+      setBar(1);
+      note.textContent = '开始解析（' + (buf.byteLength / 1048576).toFixed(2) + ' MB）…';
+      WRPLParse.parse(buf, { fileName: file.name }).then(async function (mission) {
+        var dt = ((performance.now() - t0) / 1000).toFixed(2);
+        try { await loadTerrainIfAny(mission); } catch (e) { /* 地形拿不到不影响播放 */ }
+        try { await loadTablesIfAny(mission); } catch (e2) { /* 表拿不到就用内嵌兜底 */ }
+        if (!(window.ACEUI && typeof window.ACEUI.mount === 'function')) {
+          fail('解析失败', '页面缺少 ACEUI.mount（mission.js 没加载成功），解析已完成但无法渲染。', '');
+          return;
+        }
+        var ok = window.ACEUI.mount(mission);
+        if (!ok) {
+          fail('解析失败', 'ACEUI.mount 拒绝了这份数据（结构不符）。', '');
+          return;
+        }
+        setState('is-done');
+        setIcon('\u2713');
+        setStage('完成', 100);
+        setBar(100);
+        note.textContent = '完成：' + summarize(mission) + '（' + dt + ' s）';
+        again.className = 'on';
+        window.__WRPL_LAST = mission;      // 便于自验/排查
+        setTimeout(function () { box.className = 'is-done hidden'; }, 600);
+      }).catch(function (ex) {
+        if (ex && ex.code === 'unsupported-format') {
+          failUnsupported(ex.tech || '');
+        } else {
+          fail('解析失败', String(ex && ex.message ? ex.message : ex),
+               ex && ex.tech ? ('技术细节：' + ex.tech) : '');
+        }
+        if (window.console) console.error(ex);
+      });
+    };
+    fr.readAsArrayBuffer(file);
+  }
+
+  drop.addEventListener('click', function () { input.click(); });
+  input.addEventListener('change', function () {
+    if (input.files && input.files.length) start(input.files[0]);
+  });
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      e.preventDefault();
+      drop.className = 'over';
+    });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      e.preventDefault();
+      if (e.target === document.documentElement || ev === 'drop') drop.className = '';
+    });
+  });
+  window.addEventListener('drop', function (e) {
+    e.preventDefault();
+    if (busy) return;
+    var dt = e.dataTransfer;
+    if (dt && dt.files && dt.files.length) start(dt.files[0]);
+  });
+  function reset() {
+    setState('is-idle');
+    setIcon('\u25c6');
+    setStage('等待文件', 0);
+    setBar(0);
+    note.textContent = '等待回放文件…';
+    errTitle.textContent = '解析失败';
+    errDetail.textContent = '';
+    input.value = '';
+    busy = false;
+  }
+  retry.addEventListener('click', function () { reset(); input.click(); });
+  again.addEventListener('click', function () { reset(); again.className = ''; });
+})();
+</script>
+</body>
+</html>
