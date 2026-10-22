@@ -22,6 +22,7 @@
 - **回放数据**：`mission-data.js` 是示例对局（已匿名化：玩家名、账号 ID、战队标签均为合成值），由 `tools/build_ace_mission.py` 从 `.wrpl` 解码产物生成。
 - **地形与掩膜**：由 [WT-MAP-ANALYZE](https://github.com/ShioUmiusi/WT-MAP-ANALYZE) 从玩家本机安装的游戏文件解析得到；仓库只保留少量样例，完整数据在该仓库的数据集里。
 - **载具表**：`tables/vehicle_names.json`、`tables/vehicle_categories.json` 由社区数据整理（War-Thunder-Datamine 等），仅保留显示名与类别。
+- **格式参考**：[wrpl-inspector](https://github.com/maxsupermanhd/wrpl-inspector)（AGPL-3.0）用于理解回放容器与包结构；只作参考，没有复制其代码。
 
 ## 游戏素材
 
