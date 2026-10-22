@@ -76,7 +76,7 @@ docs/                                    回放格式、解码、验证与数据
 
 ## 构建与部署
 
-`tools/build_site.py` 把站点、示例数据与完整地形打包到 `dist/`，`.github/workflows/pages.yml` 在 main 分支构建并部署到 GitHub Pages（`wtacrp.seaslug.moe`）；`ci.yml` 做语法检查与示例数据解析检查。
+`tools/build_site.py` 把工具页与完整地形打包到 `dist/`（演示页不部署），`.github/workflows/pages.yml` 在 main 分支构建并部署到 GitHub Pages；`ci.yml` 做语法检查与示例数据解析检查。绑定自定义域名时在仓库 Pages 设置里填，并先配好 DNS。
 
 ## 许可与来源
 

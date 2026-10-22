@@ -15,8 +15,6 @@ import sys
 import pack_terrain
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-CNAME = "wtacrp.seaslug.moe"
-
 # files copied to the site root, keeping their names
 ROOT_FILES = ["ace.css", "mission.css", "mission.js", "scene3d3-loader.js",
               "web/wrpl-parse.js", "web/wrpl-worker.js"]
@@ -55,8 +53,6 @@ def main(argv=None):
 
     pack_terrain.main(["--data", str(args.data), "--out", str(out / "terrain")])
     (out / ".nojekyll").write_text("")
-    (out / "CNAME").write_text(CNAME + "\n")
-
     print("site -> %s (tool page only; demo page not deployed)" % out)
     return 0
 
