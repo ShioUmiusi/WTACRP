@@ -41,6 +41,10 @@ python tools/pack_terrain.py --data ../WT-MAP-ANALYZE --out dist/terrain
 
 仓库里只保留演示地图的样例；本地直接跑时，其它地图的地形层会留空并在 `limits` 里说明。
 
+## 已知问题
+
+- **阵营标识**：目前回放数据里没有解出阵营字段，地面单位的阵营由位置推定（靠近哪一方的前线就归哪一方），可能出现误判；空中单位与在线玩家表仍以结算数据为准。
+
 ## 数据从哪来
 
 位置与事件全部来自回放本身：`ptype=2` 的 FlightModel 三维航迹、`ptype=4` 的击杀包、`ptype=6` 的 ECS 地面/机场标记点，以及结算 BLK 的玩家表。阵营、小队归属等无法直接读出的字段用回放内部证据推断，推断项在 `?` 帮助与 `docs/DATA-NOTES.md` 里写明。
@@ -95,6 +99,7 @@ Turn a War Thunder `.wrpl` replay into a minimal Ace Combat-style 3D scene: 3D t
 - Rendering: three.js r186; parsing: `web/wrpl-parse.js` plus fzstd.
 - Terrain comes from the [WT-MAP-ANALYZE](https://github.com/ShioUmiusi/WT-MAP-ANALYZE) dataset (`data-2026.10` tag) and is packed at build time by `tools/pack_terrain.py`; a sample map is included for local use.
 - Python tools decode the replay container, tracks, kill events and ECS data into `mission-data.js`; see `docs/` for the format and the exact commands.
+- Known issue: the replay stream does not expose a faction field yet, so ground units are assigned a side by position and can be misclassified; aircraft and the online player table still come from the match results.
 - The bundled demo data is anonymized (player names, account ids and clan tags are synthetic). No original game assets are redistributed; War Thunder is property of Gaijin Entertainment and this project is not affiliated with Gaijin.
 
 Code is MIT licensed.
