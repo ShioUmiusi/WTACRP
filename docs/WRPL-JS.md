@@ -1,5 +1,7 @@
 # WRPL-JS：浏览器内解析 .wrpl（移植范围 · 对比结果 · 未做项）
 
+> 说明：文中 `web/dev/` 下的自测页为开发期产物，未随仓库提供。
+
 > 产物：`web/index.html`（上传页）、`web/wrpl-parse.js`、
 > `web/vendor/fzstd.min.js`（+ `fzstd.LICENSE.txt`、`README.md`）。
 > 开发期自验脚本：`web/dev/selftest-node.js`、`web/dev/selftest.html`。
@@ -22,7 +24,7 @@
   ├ FileReader → ArrayBuffer     index.html
   ├ fzstd 解压 zstd 帧           wrpl-parse.js
   ├ 位流解码（FM/击杀/ECS）      vendor/fzstd.min.js
-  └ ACEUI.mount(ACE_MISSION)     scene3d.js / mission.js / *.css
+  └ ACEUI.mount(ACE_MISSION)     three3d/scene.js / mission.js / *.css
                                  数据表（显示名/分类）
 ```
 - **回放文件不上传**：`FileReader` 在本机读，解析全在页面里。
@@ -176,7 +178,7 @@ unitsWithIdentity 236, unitsVehicleFromPackets 0, killsWithWeapon 30, killsWithW
 没有复制上述项目的代码。
 ---
 
-## Worker 路径的就绪握手（2026-10-19）
+## Worker 路径：2 s 超时与就绪握手（2026-10-19）
 
 **现象**：默认路径端到端 **3.7 s**（主线程路径 1.65 s）；强制 Worker 路径（`force: "worker"`）直接失败。
 **原因**：`parseInWorker()` 创建 Worker、装上 `onmessage` 之后**从未发出 `{cmd:'ready'}` 握手消息**，

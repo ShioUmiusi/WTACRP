@@ -1,5 +1,7 @@
 # ACE-COMBAT 接口契约 v4（冻结）
 
+> 说明：文中 `dev/`、`build/` 下的脚手架、截图与中间产物属开发期文件，未随仓库提供。
+
 目标：把本局**真实回放** `2026.10.18 05.45.06.wrpl` 渲染成皇牌空战 7 结算画面那种
 **极简 3D 回放**：黑底透视网格、发光航迹（带垂直投影线）、目标名标签、地面单位标记、
 击杀位置标记，加一条播放控制条。纯静态、双击即开、不连网。
@@ -20,7 +22,7 @@
 
 1. **交付数据 100% 来自 `.wrpl`**：航迹（含他机三维）、击杀事件、玩家名、载具、时间轴，
    全部从回放包里解出。最终 `mission-data.js` **不得包含任何 8111 数据**，
-   生成脚本 `tools/build_ace_mission.py` **不得读取任何 8111 抓取数据**（目录名形如 `rb-session/**`，出现即判不通过）。
+   生成脚本 `tools/build_ace_mission.py` **不得读取任何 8111 抓取数据**（出现即判不通过）。
 2. **8111 只是开发期验证手段**：用它验证解码是否正确（本机 x/y/z/hdg/ias/g 作真值；
    `map_obj` 平面接触点与侧别作他机交叉校验）。验证数字写进 `REPLAY-DECODE.md` / `DATA-NOTES.md`
    的「开发期验证」一节；**不进数据文件**。
@@ -158,13 +160,13 @@ names: { "<unit key>": { name, vehicle } }
   <div id="help"></div>        <!-- ? 键帮助 -->
 </div>
 <script src="mission-data.js"></script>
-<script src="scene3d.js"></script>
+<script src="three3d/scene.js"></script>
 <script src="mission.js"></script>
 ```
 
 加载顺序固定；不写业务内联脚本；**不得引用 `dev/**` 里的脚手架数据**。
 
-### 3.2 渲染层：`scene3d.js` → `window.ACEScene`
+### 3.2 渲染层：`three3d/scene.js` → `window.ACEScene`
 
 ```js
 window.ACEScene = {
@@ -222,7 +224,7 @@ state = {
 | `tools/wrpl_decode.py`、`build/wrpl/tracks.json`、`docs/REPLAY-DECODE.md` | 航迹解析 |
 | `tools/wrpl_header.py`、`build/wrpl/{header,entities}.json`、`docs/REPLAY-FORMAT.md` | 格式解析 |
 | `mission-data.js`、`tools/build_ace_mission.py`、`docs/DATA-NOTES.md` | 导出脚本 |
-| `scene3d.js`、`ace.css` | 渲染层 |
+| `three3d/scene.js`、`ace.css` | 渲染层 |
 | `index.html`、`mission.js`、`mission.css` | UI 层 |
 | `tools/check_ace_mission.py`、`docs/VERIFY.md`、`build/verify/**` | 独立复算 |
 | `CONTRACT.md`、`README.md` | 契约与项目说明 |
@@ -230,7 +232,7 @@ state = {
 验收：
 
 1. **回放独立性（最硬的一条）**：
-   - `tools/build_ace_mission.py` 里出现 `data/raw/rb-session` 一律判不通过；
+   - `tools/build_ace_mission.py` 里出现 8111 抓包路径一律判不通过；
    - `mission-data.js` 里每个 `units[]` 都有 `z` 且不是常数（8111 根本没有他机高度，
      z 有真实起伏即证明来自回放）；
    - `meta.source == "wrpl"`。
@@ -247,7 +249,7 @@ state = {
 仓库自包含：交付页面、文档、脚本与中间产物都在同一棵树里。
 
 ```
-index.html  ace.css  mission.css  scene3d.js  mission.js  mission-data.js   ← 交付页面
+index.html  ace.css  mission.css  three3d/scene.js  mission.js  mission-data.js   ← 交付页面
 CONTRACT.md  README.md
 docs/      REPLAY-DECODE.md  REPLAY-FORMAT.md  DATA-NOTES.md  VERIFY.md
 tools/     wrpl_decode.py  wrpl_header.py  build_ace_mission.py  check_ace_mission.py
@@ -326,7 +328,7 @@ state.identity = {
 }
 ```
 
-`scene3d.js` 只消费 `state.identity`，不读 `localStorage`。
+`three3d/scene.js` 只消费 `state.identity`，不读 `localStorage`。
 
 ### 8.5 补充参考图细则（v6.1，依据第二张 AC7 地图式结算页）
 

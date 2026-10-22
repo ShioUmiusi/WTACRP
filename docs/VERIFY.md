@@ -1,5 +1,7 @@
 # ACE-COMBAT 独立验收报告（终版）
 
+> 说明：文中 `web/dev/selftest*`、`dev/verify/*.png` 等为开发期自测页与截图，未随仓库提供。
+
 > 复算工具：`tools/check_ace_mission.py`（`--selftest` → **36/36 通过**，13 个场景）
 > 机器可读：`build/verify/report.json`（工具 46 项）／人读摘要 `report.md`／工具自证 `NOTES.md`
 > **本文档共 50 项** = 工具 46 项 + 外部对拍 4 项（`8.browser-parse` 第 32 行／§3.18；**Worker 解析路径** 第 33 行／§3.19；**上传页文案与错误态** 第 34 行；**地形图层（交付+网页）** 第 35 行／§3.20）
@@ -33,9 +35,9 @@
 
 | # | 条款 / 检查项 | 判定 | 关键证据 |
 |---|---|---|---|
-| 1 | §5.1 build 脚本不读 8111 | **PASS** | `tools/build_ace_mission.py` 全文无 `rb-session` / `data/raw` |
+| 1 | §5.1 build 脚本不读 8111 | **PASS** | `tools/build_ace_mission.py` 全文无 8111 抓包路径 |
 | 2 | §5.1 `meta.source=="wrpl"` | **PASS** | `source='wrpl'` |
-| 3 | §5.1 index.html 不引 `dev/**` | **PASS** | 无 `dev/` 引用；脚本仅 `mission-data.js → scene3d.js → mission.js` |
+| 3 | §5.1 index.html 不引 `dev/**` | **PASS** | 无 `dev/` 引用；脚本仅 `mission-data.js → three3d/scene.js → mission.js` |
 | 4 | §5.1 无外部资源/无 ES module | **PASS** | 外部资源 `[]`、无 `type=module`；页面 `performance` 资源条目 **0** |
 | 5 | §5.1 units 的 z 存在且空中非常数 | **PASS** | 52 条 units：缺失 z 0 个、空中常数 0 个 |
 | 6 | §5.1 devValidation 不带坐标 | **PASS** | 只有数字与说明（含 `speedViolations=0 / trackSegments / ownSegmentIds / ownP99ErrM …`） |
@@ -59,7 +61,7 @@
 | 15j | **显示名零非 ASCII / 无回退泄漏**（`7c`，加严口径） | **PASS** | **四个来源全部零非 ASCII**：`units[].vehicleName` 0、`shots[].templateName` 0（`ROCKET`/`BOMB`/`ARH ROCKET`/`PAYLOAD`/`JETTISONED`）、`runways[].name` 0（`AF-0x RUNWAY`）、`airfields[].name` 0；31 个 vehicle 映射一致、无 template 回退泄漏、全文件无 `AIR`/`GND`；覆盖 215/236（差的 21 个是 hidden 单位、名字按约定为空串），`counts.unitsWithDisplayName=215` 相符。另核：精确模式 `"vehicleName":"ARTILLERY"` **恰好 40 次**、`LARGE ARTILLERY FORTIFICATION` **0 次残留**。`limits` 里的中文说明属说明文字、不算显示名 |
 | 15k | **`runways[]` 线段独立复算**（`runways`） | **PASS** | 4 条线段：两端距离 **2999.9–3000.6 m**（报 3000.0，差 ≤0.60 m）；由位移反算航向 155.30/323.63/168.15/347.78°（与 `headingDeg` 差 ≤0.05°）；**两端 z 差全为 0.00 m**（自证阈值 ≤8 m）；两队成对反向：af-01↔af-02 夹角 168.30°（离 180° 差 **11.70°**）、af-03↔af-04 179.60°（差 **0.40°**）；`airfields[]` 结构数 **13/13/3/3**（主/备）；机场点到最近跑道线垂距报告但不断言（如 af-01→rw-af-01 = 434 m，投影 t=0.00） |
 | 15l | **`terrain` 层：结构 / 地图一致性 / 数值 / 对齐**（`terrain`） | **PASS** | 结构齐全（`meta/contours/water/coastlines`）、`crs="replay-world-meters"`、`meta.map` 与本局关卡一致；**26 层等高线（elev 0–5000，间隔恒为 200 = contourIntervalM）、5 水体（393 点）、5 海岸线（393 点）**，共 30676 点：**非有限 0、越界 0**，`counts.terrainContours=26 == contours.length`。**独立对齐复算**（独立脚本，用生成源 1024² 栅格，重跑于新哈希上）：184 地面点 r=**0.9950**、中位 **3.89 m**、p90 **21.31 m**、**92.9% ≤30 m**；对照：翻转 y r=0.2986/82.01 m、转置 r=0.1173/373.44 m、x/y 平移 10 格 r≈0.975–0.980/中位 11.6–13.6 m；本机 5571 采样低于地形 **0 个**、最小离地 +11.5 m。**原 WARN 已消除**：交付 `limits` 不再写"当前为 null"，改为「已并入…已用 184 个地面点核对（r=0.995…）」 |
-| 15m | **`hidden` 集合与其消费**（`7e`） | **PASS** | 数据层：hidden **21 = 9 + 8 + 4**（`dummy_immortal` 9 / 机场飞行雷达 8 / 机场主雷达 4）、`counts.unitsHidden=21`、21 条 `vehicleName` 全空串、`limits` 写明理由；**消费侧已接上**：`scene3d.js` 有 `if (u.hidden === true) { continue; }`（静态定位到该行）；node 驱动与浏览器两端分别实测 `stats.units = 215 = 236 − 21`，三者一致 |
+| 15m | **`hidden` 集合与其消费**（`7e`） | **PASS** | 数据层：hidden **21 = 9 + 8 + 4**（`dummy_immortal` 9 / 机场飞行雷达 8 / 机场主雷达 4）、`counts.unitsHidden=21`、21 条 `vehicleName` 全空串、`limits` 写明理由；**消费侧已接上**：`three3d/scene.js` 有 `if (u.hidden === true) { continue; }`（静态定位到该行）；node 驱动与浏览器两端分别实测 `stats.units = 215 = 236 − 21`，三者一致 |
 | 15n | **`meta.squad` 与回放内 kill/death 指纹**（`meta.squad`） | **PASS** | `squadId=2002`、2 名成员、`authorUid` 归一化后 == `tracks.ownEntityId`（368）；**独立复算** 33 条 `killPositions` 得每 uid 的 (kills,deaths)：`f_15a` 候选 `{351,357,359,370}` → `{351:0/1, 357:2/0, 359:2/1, 370:2/1}`，按结算指纹 `kills=2, deaths=0` 过滤后**唯一剩 357** == 声明 uid（与作者 `fingerprintPerCandidate` 逐项一致，无差异）；作者成员（八幡 海鈴）无 `uidEvidence`，按 own-uid 判据只核 uid 对齐（368）✓；结算表 `humanKills` 32/32 全 0（`aiKills` 不在 `matchResults` 里，在 `header.json` 的 players 中）|
 | 15o | **窄口径补跑** | **PASS** | ① `7c` 四类零非 ASCII；`ARTILLERY` 40 次、长名 0 残留。② 字节级"只差一处"证明成立（还原后 size/sha 与上一版逐位相同；扰动后立即不同）。③ 发射点关联率（`shots[].shooterUid` 推断命中）**1694/1734 = 97.7%**（按交付数据直接统计，与导出脚本一致；该指标≠ `3e`「发射点到最近飞机」15.05 m/≤100 m 100%，两者口径不同）|
 | 15p | **单位类别层**（`7f`，新增） | **PASS** | 236/236 有 `vehicleCategory`；独立算的分布 **FIGHTER 49 / TANK 48 / ARTILLERY 40 / SPAA 35 / TRUCK 32 / RADAR 12 / BUNKER 8 / FORTIFICATION 9 / ATTACKER 3 = 236**（与预期分布逐项一致）；**9 个词、零非 ASCII、无 UNKNOWN/NONE/OTHER/NULL 兜底字样**；`meta.vehicleCategories`：`source`（datamine v2.59.0.73；显示约定、非回放数据）、`field="units[].vehicleCategory"`、`keys=37`、`vocabulary` 齐全，`unitsWithCategory=236`、`unitsUncategorized=0`、`uncategorizedValues=[]`；**语义交叉核对 0 处矛盾**（域 vs 类别、内部名含 radar/artillery/bunker 的对应）；hidden 21 条的类别 = RADAR 12 + FORTIFICATION 9 且 `vehicleName` 仍为空串；类别源表按**磁盘字节**：`vehicle_categories.json` mtime 10:38:06 / size 5326 / sha256(前16) `a3ccafaef47f0773` |
@@ -76,7 +78,7 @@
 | 25 | §5.7 暂停不前进 | **PASS** | pause 后 900 ms `met` 不动（200 → 200） |
 | 26 | §5.7 可倍速 | **PASS** | 4× 实测 **4.00×**（墙钟 38.34 s ↔ 任务时间 +153.33 s） |
 | 27 | §5.7 无 NaN 崩坏 | **PASS** | 全通道扫描（own 15 + **236 units×4**）非有限值 **0**；DOM 无 `NaN/Infinity`；`trailSkipped=0`；结尾 own 缺失时显示 `--` 而非 0 |
-| 27b | 静态地面点**始终可见** | **PASS** | 源码：`scene3d.js:231` `isStatic: !!u.static \|\| u.n <= 1`、`:261` `if (u.isStatic) { return (t >= u.t0 - 0.001) ? 0 : -1; }` → 静态点在任意 `t ≥ t0(=0)` 都取样本 0，**不按存活窗口消失**；运行期：`stats.units=236` 在 t=0.5/120/300/558.8 四点均为 236，琥珀色地标像素四点均 >0（485/92/42/17，随 top 机位移动变化属预期），`05-ground.png` 可见地面标记 |
+| 27b | 静态地面点**始终可见** | **PASS** | 源码：`three3d/scene.js:231` `isStatic: !!u.static \|\| u.n <= 1`、`:261` `if (u.isStatic) { return (t >= u.t0 - 0.001) ? 0 : -1; }` → 静态点在任意 `t ≥ t0(=0)` 都取样本 0，**不按存活窗口消失**；运行期：`stats.units=236` 在 t=0.5/120/300/558.8 四点均为 236，琥珀色地标像素四点均 >0（485/92/42/17，随 top 机位移动变化属预期），`05-ground.png` 可见地面标记 |
 | 28 | §5.6 截图 | **PASS** | `dev/verify/{01-cruise,02-kill,03-top,04-end,05-ground}.png`（均 1280×800；前四张为 52-air 版，`05-ground.png` 为 236-units 版、可见地面标记） |
 | 29 | §2.4 composed 标注 | **PASS** | 65 条事件全有布尔 `composed`（true 60 / false 5，chat 为原文） |
 | 30 | 缺值用 null/`--` | **PASS** | own 通道无整列 0/常数的填充痕迹；界面对缺失显示 `--` |
@@ -221,7 +223,7 @@ python tools/check_ace_mission.py --selftest   # 36/36
 **本侧实现路径**（不是只跑他的脚本）：
 1. `build/verify/js/dump_parse.js` —— 独立取数脚本：载入 vendored fzstd + `wrpl-parse.js`，解析后把counts/own/units/events/shots/runways/airfields/meta 各部分（含 `Object.keys()` 顺序）导出为 `js-parse-dump.json`（2.83 MB），并记录解析耗时；
 2. `build/verify/compare_js_vs_py.py` —— 独立比对脚本：把该 dump 与交付文件 `mission-data.js` 以及`kill_events.json` 逐项比，判定逻辑独立编写；结果落 `browser-parse-check.json`；
-3. 交叉参照：另跑了他方 `web/dev/selftest-node.js`（0 FAIL）作为第三方旁证；
+3. 交叉参照：另跑 `web/dev/selftest-node.js`（0 FAIL）作为第三方旁证；
 4. 浏览器侧：`python -m http.server 8877 --directory <repo> --bind 127.0.0.1`（**托管后台任务**，用后即停）→ `http://127.0.0.1:8877/web/dev/selftest.html` → **18 项检查 FAIL 0、解析 1.475 s**，截图 `dev/verify/06-browser-parse-selftest.png`；上传页 `web/index.html` 也能打开（1 个文件输入、**0 个外部资源**，脚本顺序 fzstd → wrpl-parse → scene3d → mission.js）。
 
 **逐项结果**：counts **26/26 相等**（含 ownSamples 5589、trackCount 236、airTracks 52、groundTracks/groundUnits 184、shots 1734、runways 4、airfields 4、unitsHidden 21、unitsWithCategory 236、unitsWithDeath 31、events 65、kills 33、envelopeFiltered 20、unitSeamsSplit 0、ownSegments 2、squadSize 2、terrainContours 0）；本机 5589 点逐点 **max |Δz|=0.100 m**（x/y 全 0.0000；交付侧 z 只保留 1 位小数，23/5589 落在边界）；三个时刻坐标逐位相同；空中 52 段逐点 ≤0.100 m（最差 eny-mig15bi-03）；击杀 33 条按 mission 轴折算 raw tick 后与 `(victimUid, killerUid)` 逐条一致；184 地面点按 **key** 配对全等（注意 `entityId=0x4006de` 被两个 `dummy_immortal` 共用，**两侧都一样**）；4 条跑道端点差 0.000 m；1734 发射点逐字段一致；`replayHeader`/`player`/`matchResults.players`/`vehicleRoster` 的值与**键序**全等（键序用 `Object.keys()` 导出后逐位比）。
@@ -270,7 +272,7 @@ python tools/check_ace_mission.py --selftest   # 36/36
 7. **`hidden` 单位的界面行为**：已补上消费侧静态核对 + 引用 node 驱动与浏览器两端的 `stats.units=215` 实测；**仍未在浏览器里亲自数地面标记**（浏览器时段待终验）。
 8. **"显示名"的范围已按加严口径落定**：`units[].vehicleName` / `shots[].templateName` / `runways[].name`（+ `airfields[].name`）四类零非 ASCII 即 PASS，`limits`/`provenance` 里的中文说明文字不算显示名。本版四类全 0，故 `7c` PASS。
 9. **浏览器会话被并发抢占**：定版数据上的断言在重导航后取到（`url=file:///.../index.html`、`units=52`），
-   四张截图也已在定版数据上重拍；若期间他人再改 `mission.js`/`scene3d.js`，UI 层需再跑一次（未见其变更）。
+   四张截图也已在定版数据上重拍；若期间 `mission.js`/`three3d/scene.js` 又有改动，UI 层需再跑一次（未见其变更）。
 10. **浏览器内解析 == Python 产物**：**已完成**（见 §0 第 32 行与 §3.18）。其中"上传页真实拖拽/选文件流程未验证"这条**~~已划掉~~** —— 2026-10-19 用`python -m http.server 8899 --directory <repo> --bind 127.0.0.1` + `fetch` 真实回放 + `File`/`DataTransfer` + 对 `#upload-drop` 派发真实 `drop` 事件补验通过（解析 1.55 s、`units=215`、无错误，截图 `07-upload-drop-e2e.png`），**独立复现了一遍**（1.58 s，截图 `08-upload-drop-verifier.png`）。
     仍然未验证的两条：**(a) 操作系统文件选择框本身** —— 上面走的都是 drop 路径，`input[type=file]` 的点击选择没有被驱动过（自动化浏览器无法操作系统文件选择框）；**(b) 浏览器侧 8111 派生数字** —— 浏览器里取不到 8111，这部分只能验"为 null 且如实标注"，**不能验数值**（数值只在 Python 侧独立复算过）。
 11. **方法论留痕（反复用到）**："估算字节差"不能当判据 —— 上一版拿估值对账，差了 247 B 就误判"既有文本被改写"；正确做法是**逐块实测**或**做逆操作重建后比全量哈希**。同族的还有"最近邻要取时间窗内全部候选""量级检查不等于有效性检查""NaN 会吞掉最大值""结构定位要用键而不是最近的分隔符"，都已记在 §3.13。

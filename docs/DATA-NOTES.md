@@ -8,7 +8,7 @@
 | `dev/data/mission-data.8111-dev.js`（1.87 MB） | `tools/build_ace_mission_dev8111.py` | 8111 抓取（开发期） | 脚手架：几何没解码出来时给前端开发，**不发布、不被 `index.html` 引用** |
 
 契约 v4 §1 硬约束：交付数据不得含 8111 数据。本文件里出现的 8111 数字**只用于开发期交叉验证**，
-一个字节都没进 `mission-data.js`；`build_ace_mission.py` 全文没有 `rb-session` / `data/raw` 字样（已自查 + 6a 复核）。
+一个字节都没进 `mission-data.js`；`build_ace_mission.py` 全文没有 8111 抓包相关字样（已自查并复核）。
 
 ---
 

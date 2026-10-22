@@ -35,7 +35,7 @@
 `tools/wrpl_decode.py` 是按这些实现**重写的 Python 版**，未逐字照抄；本地只读副本在
 `build/wrpl-inspector/`。**交付内容里不复制该项目的代码文本**。
 
-8111 数据（`data/raw/rb-session/`）**只用于开发期校验**，不进入 `tracks.json` / `own_props.json` 的任何字段。
+8111 抓包数据**只用于开发期校验**，不进入 `tracks.json` / `own_props.json` 的任何字段。
 
 ## 2. 包帧与时间轴
 
@@ -245,7 +245,7 @@ python tools/wrpl_decode.py --explore    # 帧/类型/时间戳统计
 `build/wrpl/uid_map.json`（ECS 解析）给了每个 uid 的 `side`。用两条**互相独立**的 8111 证据检验：
 
 1. **颜色**：本局色板固定（`#174DFF` 友方、`#39D921` 小队、`#FA0C00` 敌方、`#faC81E` 自己）。
-2. **可见性**：RB 里**友军全程显示、敌方只在被点亮时显示**（`data/raw/rb-session/DATASET.md` 已确认）。
+2. **可见性**：RB 里**友军全程显示、敌方只在被点亮时显示**（8111 抓包已确认）。
    于是"最近接触覆盖率≈100%"就等于友军，"覆盖率低"就等于敌方。
 
 两条证据**彼此高度一致**（高覆盖 ↔ 蓝色/绿色；低覆盖 ↔ 红色），但与 `uid_map.side`：**一致 6 / 不一致 23**。

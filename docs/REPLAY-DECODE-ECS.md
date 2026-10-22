@@ -7,7 +7,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| `tools/wrpl_decode_ecs.py` | 本线全部代码（自包含，不依赖 `wrpl_decode.py`） |
+| `tools/wrpl_decode_ecs.py` | 本实现的全部代码（自包含，不依赖 `wrpl_decode.py`） |
 | `build/wrpl/uid_map.json` | **`uid ↔ entityId ↔ 载具/阵营/玩家` 映射（44 个 uid，全覆盖）** |
 | `build/wrpl/tracks_ecs.json` | 契约 §1.0 同构的部分产物：81 个飞机实体的出生点 |
 | `build/wrpl/ecs_entities.json` | 全部 ECS 实体（4427 条构造记录，见 §3.6） |
@@ -26,7 +26,7 @@ python tools/wrpl_decode_ecs.py --uidmap     # 只出 uid_map.json
 方法来源：**结构移植自 [wrpl-inspector v3](https://github.com/maxsupermanhd/wrpl-inspector)（Go，AGPL-3.0）**
 `wrpl/packet/parser/ecs2/{ecs2,Parsers,compdefs,EntityManager}.go` 与 `data/ecshashes.json`
 （组件哈希→名字，780 KB）。本脚本是独立的 Python 重写，并按本局实测改了两处（见 §2）。
-本脚本**不读** `data/raw/rb-session/**`，8111 只出现在 `--verify` 的开发期校验里。
+本脚本**不读** 8111 抓包数据，8111 只出现在 `--verify` 的开发期校验里。
 
 ---
 
@@ -278,7 +278,7 @@ FlightModel；每条只有一个采样点（创建时刻）。
 #### 顺带得到的、**已校验**的东西：地面单位位置
 
 同一套「transform 打头 → 组件值起点 +10 = (x, 上, z)」规则，对地面单位也成立，而且
-**它们彼此独立地互相验证**（这是本线最强的位置证据）：
+**它们彼此独立地互相验证**（这是本文件最强的位置证据）：
 
 | 模板 | 命中 | y（上轴）绝对值中位 | 应有形态 |
 |---|---|---|---|
@@ -303,9 +303,9 @@ FlightModel；每条只有一个采样点（创建时刻）。
 
 这些数字只写进 `ecs_entities.json` 的 `devValidation`（纯数字，不含任何外部坐标）。
 
-> **地面层的正式产物不在这里**：兄弟线航迹解析已从 `ecs_entities.json` 产出
+> **地面层的正式产物不在这里**：航迹解析已从 `ecs_entities.json` 产出
 > `build/wrpl/ground.json`（184 条静态点位，含同一套校验数字）。
-> 本线**不再产出第二份地面文件**，避免两份竞争。本脚本的 `--display-names` 只负责
+> 本文件**不再产出第二份地面文件**，避免两份竞争。本脚本的 `--display-names` 只负责
 > 显示名，不写任何坐标。
 
 ### 3.7 `className` 字段与「跑道」结论（2026-10-19 增补）
@@ -361,7 +361,7 @@ FlightModel；每条只有一个采样点（创建时刻）。
 | af-03 | (−14245, −21584, 173) | 3 | 主雷达 + 飞行雷达 |
 | af-04 | (−17777, 24439, 246) | 3 | 同上 |
 
-**不要**把雷达点到雷达点连一条线充作跑道 —— 那是本线明确排除的编造。
+**不要**把雷达点到雷达点连一条线充作跑道 —— 那是本文件明确排除的编造。
 
 （**注**：本小节写于第一次查证之后；随后用机场标记点反推出了 4 条跑道，见 §3.7.1。这里保留「不要连雷达点」的告诫 —— 反推用的是**标记点**，不是雷达点。）
 
@@ -507,8 +507,8 @@ uid 374（`fa_18a`）→ **null**（不判 ally，也不判 enemy）——这正
 ### 5.3 本机（可选锚点）
 
 `--own-uid 368` 会把本机机型从**本局结算 BLK 的 author 行**补上（`f_15a`，team 2），
-并在 `vehicleSource` 里标明来源。`uid 368 = 本机` 是**兄弟线用开发期真值钉住的**结论
-（不是本线独立得出的），但补进去的机型名本身来自回放自己的结算 BLK，不含外部数据。
+并在 `vehicleSource` 里标明来源。`uid 368 = 本机` 是**航迹解析用开发期真值钉住的**结论
+（不是本文件独立得出的），但补进去的机型名本身来自回放自己的结算 BLK，不含外部数据。
 不带这个参数时该字段留 null。
 
 顺带一个自检：本机 `uid 368` 的 `playerCandidates` = `[Mo Amaris, WhatsConsent, 八幡 海鈴]`，
@@ -520,11 +520,11 @@ uid 374（`fa_18a`）→ **null**（不判 ally，也不判 enemy）——这正
 ① 色板 `#174DFF` 友 / `#39D921` 小队 / `#FA0C00` 敌；② RB 里友军全程显示、敌军仅被点亮时显示，
 于是「最近 8111 接触覆盖率≈100%」=友军、「覆盖率低」=敌军。
 
-结果：**本线给出明确 `side` 的 9 个 uid，与他们的判定 9/9 全一致**
-（349/352/358 = ally；344/345/348/361/369/372 = enemy）。其余 uid 本线给 `null`，
-他们也多数判不出（覆盖率落在 0.5–0.95 的中间地带）→ 「不确定就不取值」的处理被确认是对的。
+结果：**本文件给出明确 `side` 的 9 个 uid，与 8111 证据的判定 9/9 全一致**
+（349/352/358 = ally；344/345/348/361/369/372 = enemy）。其余 uid 本文件给 `null`，
+这些 uid 的覆盖率也多数落在 0.5–0.95 的中间地带 → 「不确定就不取值」的处理被确认是对的。
 
-下游已落地：`tracks.json.units[].side` = ally 8 / enemy 6 / unknown 30（本线的 `null` 映射成 `unknown`）；
+下游已落地：`tracks.json.units[].side` = ally 8 / enemy 6 / unknown 30（本文件的 `null` 映射成 `unknown`）；
 `vehicle` 覆盖 31/44；本机 `uid-368` = `ally` + `vehicle:"f_15a"`。
 
 > 本次复核同时纠正了本文档上一版 §5.1 的错误（把 `tN` 前缀当队别）。留个记录：
@@ -561,7 +561,7 @@ const label = NAMES[vehicle] || vehicle;
 **来源**：`gszabi99/War-Thunder-Datamine` 本地只读副本（外部参考仓库 `War-Thunder-Datamine`（本地只读副本），版本
 **2.59.0.73**）的 `lang.vromfs.bin_u/lang/units.csv`。载具显示名的键是
 **`<内部名>_shop`**（例：`f_15a_shop` = `F-15A`、`ussr_t_55_am_shop` = `T-55AM-1`）。
-该副本**只读**，本线只读取、未修改，也未分发其任何文件。
+该副本**只读**，本文件只读取、未修改，也未分发其任何文件。
 
 **处理流水线**：官方英文名 → 去 UI 标记（`◌` `▄` 等）→ 去括号备注 → 去批次/出口型后缀
 （`Block 10` `Early` `Netz` `(9-19)` `F21` `AMV` `ISh`）→ 全大写 → 去非 ASCII。
@@ -667,8 +667,8 @@ const label = NAMES[vehicle] || vehicle;
 | ② | **`0003584a` ReplayCockpitParams（本机属性表）与各实体 FM 航迹匹配 → 认领 uid**。这是**换别人回放时的兜底**：本机属性表只描述"这一架"，把它与 44 条 FM 航迹逐条比残差，最小的那条就是本机 | ✅ | `python tools/wrpl_decode.py --own`（航迹解析的工具）→ `build/wrpl/own_props.json`；残差见 `tracks.json.devValidation.ownSelfAltitudeRmsM = 0.6435`、`ownRmsErrM`（平面） |
 | ③ | ECS `spawnSlotName → 玩家槽位 → 结算表` | ❌ **本局不成立** | `spawnSlotName` 是**出生组**（§3.2），与 `playersInfo.slot`(0..6) 不是同一编号空间（`REPLAY-FORMAT.md` §5.2 已排除该 u32 与 slot 同源） |
 
-**注意 ② 的归属**：`own_props.json` 与 `tracks.json` 的残差数字是**兄弟线航迹解析产出的**，
-本线只是引用；本线独立做的是 ①（`uid_map.json` 里 `uid-368 → 八幡 海鈴`）与 ③ 的**证伪**。
+**注意 ② 的归属**：`own_props.json` 与 `tracks.json` 的残差数字是**航迹解析产出的**，
+本文件只是引用；本文件独立做的是 ①（`uid_map.json` 里 `uid-368 → 八幡 海鈴`）与 ③ 的**证伪**。
 
 **`squad.json` 的字节是纯 ASCII**：用 `ensure_ascii=True` 写出，非 ASCII 的回放值
 （玩家名、战队标签）以 JSON unicode 转义（反斜杠-u 形式）存放 —— **解码后原样还原，没有做任何转写**。
@@ -818,14 +818,14 @@ const label = NAMES[vehicle] || vehicle;
 
 ### 5.5.1 哈希口径：报哈希一律用**二进制（磁盘字节）**
 
-本线的 JSON 产物是 **CRLF** 换行 —— 脚本用 Python 文本模式写文件，Windows 会把 `\n` 翻译成 `\r\n`。
+本文件的 JSON 产物是 **CRLF** 换行 —— 脚本用 Python 文本模式写文件，Windows 会把 `\n` 翻译成 `\r\n`。
 后果：用 `open(fp, encoding="utf-8").read()`（文本模式）取哈希，会先做 universal-newlines 规范化，
 **字节数也一起变**，于是同一个文件得到两个不同的 sha256。
 
 实测（`vehicle_display_names.json`）：磁盘 **5825** 字节、`\r\n` **156** 处、裸 `\n` 0；
 文本模式读出 **5669** 字符；`5825 − 156 = 5669`。
 
-**约定**：本线对外一律报 `sha256(open(fp,"rb").read())`，并注明「磁盘字节口径」。
+**约定**：本文件对外一律报 `sha256(open(fp,"rb").read())`，并注明「磁盘字节口径」。
 
 **这条约定只写进文档是不够的 —— 又踩了一次，所以把它做成了脚本**：
 
@@ -846,13 +846,13 @@ python build/ecs/hash_report.py      # 只走 open(fp,"rb")，打印 sha256 + by
 
 ### 5.6 时间戳口径（避免 256 倍误读）
 
-本线所有产物**只给回放原始 tick**一种口径（`spawnTick` / `spawnTickRaw` / `samples[][0]`）：
+本文件所有产物**只给回放原始 tick**一种口径（`spawnTick` / `spawnTickRaw` / `samples[][0]`）：
 
 ```
 秒 = tick / 256000        （等价：tick / 256 = 毫秒）
 ```
 
-不另给「秒」字段，也不给「毫秒×256」这种中间口径 —— 兄弟线踩过一次（把 raw tick 当毫秒×256，
+不另给「秒」字段，也不给「毫秒×256」这种中间口径 —— 航迹解析踩过一次（把 raw tick 当毫秒×256，
 大了 256 倍）。`tracks_ecs.json` 的 `secPerTick = 3.90625e-06` 就是 1/256000。
 
 ## 7. 复现与自检
@@ -872,7 +872,7 @@ python tools/wrpl_decode_ecs.py --categories   # vehicle_categories.json（型�
 python tools/wrpl_decode_ecs.py --build     # tracks_ecs.json
 ```
 
-`--spawn` 打印的**相对偏移直方图**是本线最重要的自检：只有一个峰（+10，81 个块）才说明
+`--spawn` 打印的**相对偏移直方图**是本文件最重要的自检：只有一个峰（+10，81 个块）才说明
 位置字段定位不是碰巧。
 
 ## 8. 没解出来的（留给后来者）
