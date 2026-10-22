@@ -23,13 +23,15 @@
 
 ## 快速开始
 
-仓库是纯静态站点，不需要构建就能看演示页：
+仓库是纯静态站点，不需要构建就能在本地看两个页面：
 
 ```bash
 python -m http.server 8000
-# 打开 http://localhost:8000/          演示页
+# 打开 http://localhost:8000/          演示页（预生成数据）
 # 打开 http://localhost:8000/web/      工具页（拖入 .wrpl）
 ```
+
+部署到 GitHub Pages 的只有工具页；演示页与预生成数据留在仓库里供本地对照和回归。
 
 完整的全地图地形（163 张等高线 + 掩膜，约 100 MB）来自 [WT-MAP-ANALYZE](https://github.com/ShioUmiusi/WT-MAP-ANALYZE) 的数据集，构建时打包：
 

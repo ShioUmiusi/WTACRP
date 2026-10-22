@@ -1,7 +1,9 @@
-"""Assemble the static site into ``dist/`` for GitHub Pages.
+"""Assemble the GitHub Pages site into ``dist/``.
 
-The repository ships the application and a few sample maps; the full terrain
-set comes from WT-MAP-ANALYZE at build time:
+Only the uploader/tool page is published. It lives at ``web/index.html`` in the
+repository, so paths starting with ``../`` are rebased to the site root here.
+The demo page and its pre-generated data stay in the repository for local use
+and are deliberately not deployed.
 
     python tools/build_site.py --data ../WT-MAP-ANALYZE --out dist
 """
@@ -13,12 +15,13 @@ import sys
 import pack_terrain
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FILES = [
-    "index.html", "mission.js", "mission.css", "ace.css",
-    "scene3d3-loader.js", "mission-data.js", "attitude-data.js",
-]
-DIRS = ["web", "vendor", "tables"]
 CNAME = "wtacrp.seaslug.moe"
+
+# files copied to the site root, keeping their names
+ROOT_FILES = ["ace.css", "mission.css", "mission.js", "scene3d3-loader.js",
+              "web/wrpl-parse.js", "web/wrpl-worker.js"]
+# (source dir, destination dir)
+DIRS = [("three3d", "three3d"), ("tables", "tables")]
 
 
 def main(argv=None):
@@ -33,22 +36,28 @@ def main(argv=None):
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
-    for name in FILES:
-        shutil.copy2(ROOT / name, out / name)
-    for name in DIRS:
-        shutil.copytree(ROOT / name, out / name,
-                        ignore=shutil.ignore_patterns("dev"))
-    (out / "three3d").mkdir()
-    shutil.copy2(ROOT / "three3d" / "scene.js", out / "three3d" / "scene.js")
-    (out / "terrain").mkdir()
-    for p in (ROOT / "terrain").glob("air_skyscraper_city*"):
-        shutil.copy2(p, out / "terrain" / p.name)
+    for name in ROOT_FILES:
+        src = ROOT / name
+        shutil.copy2(src, out / src.name)
+    for src_name, dst_name in DIRS:
+        shutil.copytree(ROOT / src_name, out / dst_name)
+    (out / "three3d").mkdir(exist_ok=True)
+
+    # tool page as site root, with ../ references rebased to /
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    (out / "index.html").write_text(html.replace('"../', '"./'), encoding="utf-8")
+
+    # three.js and fzstd both go under vendor/
+    vendor = out / "vendor"
+    vendor.mkdir(exist_ok=True)
+    shutil.copytree(ROOT / "vendor" / "three", vendor / "three")
+    shutil.copytree(ROOT / "web" / "vendor", vendor, dirs_exist_ok=True)
 
     pack_terrain.main(["--data", str(args.data), "--out", str(out / "terrain")])
-
     (out / ".nojekyll").write_text("")
     (out / "CNAME").write_text(CNAME + "\n")
-    print("site -> %s" % out)
+
+    print("site -> %s (tool page only; demo page not deployed)" % out)
     return 0
 
 
