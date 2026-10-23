@@ -12,6 +12,10 @@ venv/
 # local replay files
 *.wrpl
 
+# tooling output
+.graphify-out/
+graphify-out/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

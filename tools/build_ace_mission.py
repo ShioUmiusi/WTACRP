@@ -500,7 +500,7 @@ def build_ground_units(ground, axis, display=None, centers=None, hidden_all=None
         tick = g.get("spawnTickRaw")
         out.append({
             "key": "gnd-%s-%03d" % (code, i),
-            # 阵营：用户明确"WT 不存在中立单位、反推可以" → 按到两个阵营出生中心的最近距离推定
+            # 阵营：WT 不存在中立单位，按到两个阵营出生中心的最近距离推定
             "side": ground_side(x, y, centers), "sideDecoded": None,
             "sideInferred": ground_side(x, y, centers) is not None,
             # vehicle 用**原始内部名**：ground.json 目前只给 template（tank/fortification），
@@ -1693,7 +1693,7 @@ def main():
         "②剩余 11 架 AI 用**出生位置最近中心**判定（锚点=①已定的 33 个，自检 32/33 正确）。"
         "全部是纯回放数据。ECS 的原始取值仍逐条保留在 units[].sideDecoded 里以便追溯。",
         "**地面点的阵营也是推定**：按到 side_final.centers 两个出生中心的最近距离二选一"
-        "（用户明确「WT 不存在中立单位、反推可以」）；与 AI 侧别一样是推断，界面开关可整体校正。",
+        "（WT 不存在中立单位，反推可以）；与 AI 侧别一样是推断，界面开关可整体校正。",
         "**AI 的侧别是推定**（出生位置聚类，不是逐机确证）：若与画面观感冲突，"
         "可用 ui 齿轮里的「反转」开关整体校准；地面点位仍为 unknown（没有可用的阵营证据，不猜）。"
         "历史：ECS 早先基于 missionName 的取值方向未闭合（wrpl-probe 8111 交叉 6/23、我的颜色投票 13/29 与取反 16/26、"
@@ -1820,7 +1820,7 @@ def main():
             "player": player,
             "matchResults": match_results,
             "squad": squad,
-            # 类别词表与来源（Lead 点名要的 meta 块）；缺文件时为 null，不编
+            # 类别词表与来源（meta 块）；缺文件时为 null，不编
             "vehicleCategories": ({
                 "source": ("build/wrpl/vehicle_categories.json"
                            "（datamine v2.59.0.73；显示约定，非回放数据）"),

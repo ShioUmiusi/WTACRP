@@ -2555,7 +2555,7 @@ def check_units_10hz(cfg, md, tracks, results):
 
 
 def check_display_names(cfg, md, results, text):
-    """7c：显示名零非 ASCII + 无回退泄漏（按 lead 加严口径）。"""
+    """7c：显示名零非 ASCII + 无回退泄漏（加严口径）。"""
     units = [u for u in (md.get("units") or []) if isinstance(u, dict)]
     if not units:
         add(results, "7c.display-names", "型号显示名（零非 ASCII / 无回退泄漏）", SKIP, "没有 units")
@@ -2696,7 +2696,7 @@ def check_hidden(cfg, md, results, texts):
               % (len(reads), ("：" + json.dumps(reads[:3], ensure_ascii=False)) if reads else ""))
     if not reads:
         problems.append("渲染/UI 代码没有读 units[].hidden（21 个隐藏单位可能仍会被画出来）")
-    ev.append("说明：本条只做数据层与消费侧**静态**核对；浏览器侧由 lead 终验。"
+    ev.append("说明：本条只做数据层与消费侧**静态**核对；浏览器侧另行终验。"
               "数据层已把 hidden 与 counts.unitsHidden 对齐。")
     ev.append("被验文件指纹：%s" % file_fingerprint(cfg.get("mission_path") or ""))
     if problems:
@@ -3882,7 +3882,7 @@ def check_tracks(cfg, md, raw, tracks, mapping, results):
                                     file_fingerprint(cfg.get("mission_path") or ""))]
     m1, r1 = acc["sim"]
     p99 = acc["p99"]
-    # 判定口径（lead 裁定）：rms≤15 m 且 p99≤50 m 视为达标；max 单独列出并注明离群
+    # 判定口径：rms≤15 m 且 p99≤50 m 视为达标；max 单独列出并注明离群
     if r1 <= 15.0 and p99 <= 50.0:
         st = PASS
         det = ("达标：rms=%.1f m ≤15、p99=%.1f m ≤50；单点 max=%.1f m >50 的标称目标，属离群点"

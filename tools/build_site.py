@@ -17,7 +17,7 @@ import pack_terrain
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # files copied to the site root, keeping their names
 ROOT_FILES = ["ace.css", "mission.css", "mission.js", "scene3d3-loader.js",
-              "web/wrpl-parse.js", "web/wrpl-worker.js"]
+              "web/wrpl-parse.js", "web/wrpl-worker.js", "web/airfields.js"]
 # (source dir, destination dir)
 DIRS = [("three3d", "three3d"), ("tables", "tables")]
 
@@ -52,6 +52,11 @@ def main(argv=None):
     shutil.copytree(ROOT / "web" / "vendor", vendor, dirs_exist_ok=True)
 
     pack_terrain.main(["--data", str(args.data), "--out", str(out / "terrain")])
+    # 机场目录是仓库自带的小表（不依赖地形数据集），单独拷进站点
+    af = ROOT / "terrain" / "airfields.json"
+    if af.exists():
+        (out / "terrain").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(af, out / "terrain" / "airfields.json")
     (out / ".nojekyll").write_text("")
     print("site -> %s (tool page only; demo page not deployed)" % out)
     return 0

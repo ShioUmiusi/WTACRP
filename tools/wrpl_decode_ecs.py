@@ -2339,7 +2339,7 @@ DISPLAY_OVERRIDE = {
     "structures/ussr_quest_large_art_noground": "ARTILLERY",
     "structures/unit_airfield_flight_radar_char": "AIRFIELD FLIGHT RADAR",
     "structures/unit_airfield_main_radar_char": "AIRFIELD MAIN RADAR",
-    # F-14A 三个变体统一显示成基础型号（lead 定：不猜变体，只做显示约定）；
+    # F-14A 三个变体统一显示成基础型号（不猜变体，只做显示约定）；
     # 裸名 f_14a 在 datamine v2.59 里不存在，但回放/上报可能直接给裸名。
     "f_14a": "F-14A",
     "f_14a_early": "F-14A",
