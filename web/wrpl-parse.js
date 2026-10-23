@@ -57,6 +57,16 @@
                         't1_airfield_top', 't2_airfield_top'];
   var RUNWAY_LENGTH_M = 3000.0;        // 来自模型名 dynaf_pg_1line_3000_universal
 
+  /* 地面同步位置：MPI 0xF073（客户端）/ 0xF074（服务器），ptype=4。
+   * 来源：wrpl-acmi dev 分支 wrpl/packet/parser/movement/ground.go（AGPL-3.0），
+   * 按位布局重写；本局实测 788 包 / 118 uid / 7275 采样，0 解析错误。 */
+  var GROUND_MPI_IDS = [0x73, 0x74];
+  var GROUND_UID_MAX = 2048;
+  var GROUND_DELTA_HIST = 32;
+  var GROUND_MAX_DELTA = 16384;
+  var GROUND_MAX_RECORD = 65536;
+  var GROUND_SPAWN_MATCH_M = 10.0;     // uid → ECS 地面构造点的绑定阈值（首采样位置）
+
   var AIR_TEMPLATES = ['aircraft+player_unit', 'aircraft'];
   var AIR_TEMPLATE_NAMES = { 'aircraft': 1, 'aircraft+player_unit': 1 };
   var PROJECTILE_TEMPLATES = { 'rocket': 1, 'rocket+arh_shell': 1, 'bomb': 1,
@@ -882,7 +892,7 @@
     if (PROJECTILE_TEMPLATES[name]) return 'projectile';
     if (name === 'damage_area') return 'explosion';
     if (AIR_TEMPLATE_NAMES[name]) return 'aircraft';
-    if (name === 'tank') return 'ground';
+    if (name === 'tank' || name === 'light_vehicle' || name === 'ship') return 'ground';
     if (name === 'fortification') return 'structure';
     if (name === 'sync_player') return 'player_slot';
     if (MOD_TEMPLATES[name]) return 'mod';
@@ -903,6 +913,62 @@
       i += 1;
     }
     return out;
+  }
+
+  /** 地面单位的真实 uid / team（**实测布局，不是猜**）。
+   *  6 份回放（TEST0–5）共 715 个能对上结算的地面单位，与上游 wrpl-acmi 的
+   *  `ecs:team` 结果逐单位一致（0 分歧）：
+   *    - 块里型号串会出现 1–2 次（`tankModels/…` 或 `structures/…`）；
+   *    - 第一次出现的起点 − 60 = uid（int32 LE，0–2047）；
+   *    - 最后一次出现的起点 − 5 = team（int32 LE，1=蓝 2=红）。
+   *  任一项越界/不合理就丢掉该项；两项都拿不到返回 null，交给原来的推断，不猜。 */
+  function s32at(d, off) { return u32le(d, off) | 0; }
+
+  /* 地面型号串的路径前缀（实测：坦克/工事/防空炮各一套）。 */
+  var GROUND_MODEL_PREFIXES = ['tankModels/', 'structures/', 'air_defence/'];
+
+  function groundModelOffsets(blk) {
+    var out = [];
+    for (var i = 0; i + 11 < blk.length; i++) {
+      var hit = 0;
+      for (var p = 0; p < GROUND_MODEL_PREFIXES.length; p++) {
+        var pre = GROUND_MODEL_PREFIXES[p];
+        if (i + pre.length >= blk.length) continue;
+        var okPre = true;
+        for (var q = 0; q < pre.length; q++) {
+          if (blk[i + q] !== pre.charCodeAt(q)) { okPre = false; break; }
+        }
+        if (okPre) { hit = pre.length; break; }
+      }
+      if (!hit) continue;
+      var j = i + hit;
+      while (j < blk.length) {
+        var c = blk[j];
+        var ok = (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A) ||
+                 (c >= 0x61 && c <= 0x7A) || c === 0x5F || c === 0x2F || c === 0x2E || c === 0x2D;
+        if (!ok) break;
+        j++;
+      }
+      if (j > i + 11) out.push(i);
+      i = j - 1;
+    }
+    return out;
+  }
+
+  function groundIdentity(blk) {
+    var offs = groundModelOffsets(blk);
+    if (!offs.length) return null;
+    var res = {};
+    if (offs[0] >= 60) {
+      var uid = s32at(blk, offs[0] - 60);
+      if (uid >= 0 && uid < GROUND_UID_MAX) res.uid = uid;
+    }
+    var last = offs[offs.length - 1];
+    if (last >= 5) {
+      var team = s32at(blk, last - 5);
+      if (team === 1 || team === 2) res.team = team;
+    }
+    return (res.uid === undefined && res.team === undefined) ? null : res;
   }
 
   function findGroundClassname(blk) {
@@ -1011,8 +1077,9 @@
     this.templates = {};     // tid -> {id,name,comps}
     this.compdefs = {};      // cid -> [dch, cch]
     this.creations = [];     // {tick,eid,tid,name,bs,vstart,block}
+    this.destructions = [];  // {tick,eid}：控制码 0x26（实体销毁），用于击毁/失效时刻
     this.stats = { plainPackets: 0, lz4Packets: 0, lz4Fail: 0, constructs: 0,
-                   constructFail: 0, lastError: null };
+                   constructFail: 0, destructFail: 0, lastError: null };
   }
 
   EcsParser.prototype.parseTemplate = function (br) {
@@ -1053,6 +1120,19 @@
   EcsParser.prototype.parsePacket = function (payload, tick) {
     var r = new BitReader(payload);
     var control = r.byte();
+    if (control === 0x26) {
+      /* 销毁：control、count（+1）、EID 列表。EID 与构造消息里的 EID 同一套编码。 */
+      var dn = r.byte() + 1;
+      for (var di = 0; di < dn; di++) {
+        try { this.destructions.push({ tick: tick, eid: r.eid() }); }
+        catch (e) {
+          this.stats.destructFail++;
+          this.stats.lastError = String(e && e.message ? e.message : e);
+          break;
+        }
+      }
+      return control;
+    }
     if (control === 0x25) {
       // 压缩的构造消息：解 LZ4 block 后，块首字节是「构造条数」，其后是构造消息
       this.stats.lz4Packets++;
@@ -1086,7 +1166,7 @@
 
   /* ------------------------------------------------------------ 8. uid → 载具/玩家/阵营 */
 
-  function buildUidMap(ecs, players, results, ownUid) {
+  function buildUidMap(ecs, players, results, ownUid, slotPlayers) {
     var byTv = {}, nPlayers = players.length;
     players.forEach(function (p) {
       (p.vehicles || []).forEach(function (v) {
@@ -1142,8 +1222,14 @@
       }
       var key = String(uidRaw);
       if (!(key in recs)) { recs[key] = []; recsOrder.push(key); }
+      var pid = null;
+      if (c.vstart + 119 + 4 <= c.block.length) {
+        pid = s32at(c.block, c.vstart + 119);
+        if (!(pid >= 0 && pid < 256)) pid = null;
+      }
       recs[key].push({ eid: c.eid, tick: c.tick, team: team, slot: slot,
-                       className: cls, blockSize: c.bs, valuesStart: c.vstart });
+                       className: cls, blockSize: c.bs, valuesStart: c.vstart,
+                       playerId: pid });
     });
 
     var vehTeams = {};
@@ -1191,17 +1277,39 @@
       if (pteam !== null && authorTeam !== null && authorTeam !== undefined) {
         side = pteam === authorTeam ? 'ally' : 'enemy';
       }
+      var slotHit = null;
+      if (slotPlayers) {
+        /* 同一 uid 可能有多个构造实例；只要任一实例带有效 unit__playerId 且能对上玩家表就采用 */
+        for (var li = 0; li < lst.length && !slotHit; li++) {
+          var pid = lst[li].playerId;
+          if (pid === null || pid === undefined) continue;
+          var sp = slotPlayers[pid];
+          if (sp && sp.name && (sp.team === 1 || sp.team === 2)) slotHit = sp;
+        }
+      }
+      if (slotHit) {
+        player = slotHit.name;
+        pteam = slotHit.team;
+        side = (authorTeam !== null && authorTeam !== undefined) ? (pteam === authorTeam ? 'ally' : 'enemy') : null;
+        tcand = [pteam];
+        cand = [player];
+      }
       out[String(uid)] = {
         entityIndex: pick.eid & 0x3FFFFF, entityId: '0x' + pick.eid.toString(16),
-        player: player, playerCandidates: cand, vehicle: vehicle, team: pteam,
+        player: player, playerCandidates: cand, playerUserId: slotHit ? String(slotHit.playerId) : null,
+        playerClan: slotHit ? (slotHit.clan || null) : null,
+        vehicle: vehicle, team: pteam,
         teamCandidates: tcand, side: side,
         spawnGroup: mteam !== null && mteam !== undefined ? ('t' + mteam) : null,
         spawnSlotName: slot, spawnGroupIsTeam: false, spawnTick: pick.tick,
         instances: lst.length,
-        sideSource: pteam ? 'vehicle→结算玩家表 team' : 'unresolved',
-        source: 'wrpl ptype=6 ECS 实体构造块（uid=值起点+' + UID_REL_OFFSET +
-                ' 的 u16 低 11 位；vehicle=unit__className；spawnSlotName=t[12]_playerNN_K）',
-        confidence: (vehicle && player) ? 'high' : (vehicle ? 'medium' : 'low')
+        sideSource: slotHit ? 'ecs:unit__playerId → slot team'
+          : (pteam ? 'vehicle→结算玩家表 team' : 'unresolved'),
+        source: slotHit
+          ? 'wrpl ptype=4 slot(0xF02D) 玩家表 + ECS unit__playerId（组件值起点+119）'
+          : 'wrpl ptype=6 ECS 实体构造块（uid=值起点+' + UID_REL_OFFSET +
+            ' 的 u16 低 11 位；vehicle=unit__className；spawnSlotName=t[12]_playerNN_K）',
+        confidence: slotHit ? 'high' : ((vehicle && player) ? 'high' : (vehicle ? 'medium' : 'low'))
       };
     });
 
@@ -1757,32 +1865,570 @@
     return (best === 'ally' || best === 'enemy' || best === 'squad') ? best : 'unknown';
   }
 
-  function buildGroundUnits(ground, axis, display, centers, hiddenAll) {
+  /* ------------------------------------------------ 12. 地面同步位置（0xF073）
+   * 每条 ptype=4 包体：签名 02 58 73 f0 / 02 58 74 f0，其后是
+   *   [ULEB 位长][字节对齐][uid 下界 u16][上界 u16][同步时刻 u32][可靠性序号 u16]
+   *   [每 uid：标志位 + 增量块（RLE 0ki + 与前次 XOR）]
+   * 位置字段与飞机同坐标系（x=世界 X，y=高度，z=世界 Z）。本局解出的高度是真实地形高度
+   * （13–246 m），直接用于播放；只有取不到时才回落到 ECS 构造点高度。 */
+
+  var _gf32 = new DataView(new ArrayBuffer(4));
+  function groundF32(br) {
+    var b = br.bytesN(4);
+    _gf32.setUint8(0, b[0]); _gf32.setUint8(1, b[1]);
+    _gf32.setUint8(2, b[2]); _gf32.setUint8(3, b[3]);
+    return _gf32.getFloat32(0, true);
+  }
+
+  /** danet ReadBits(n) + binary.LittleEndian.Uint32：≤8 位一段，段内 MSB 在前。 */
+  function groundBitsLE(br, n) {
+    var v = 0, sh = 0, left = n;
+    while (left > 0) {
+      var k = left >= 8 ? 8 : left;
+      v += br.bits(k) * Math.pow(2, sh);
+      sh += 8; left -= k;
+    }
+    return v;
+  }
+
+  function groundClamp(v) { return v < -1 ? -1 : (v > 1 ? 1 : v); }
+
+  /** Dagor 2-bit RLE（wrpl-acmi ground_delta.go 的 rle0kiDecompress）。 */
+  function groundRle0ki(src) {
+    var limit = src.length - 1;
+    if (limit < 0) throw new Error('rle 空');
+    var parity = src[limit];
+    if (parity !== 111 && parity !== 222) throw new Error('rle parity ' + parity);
+    var out = new Uint8Array(GROUND_MAX_RECORD);
+    var outBits = 0, code = -1, sup = -1;
+    for (var i = 0; i < limit; i++) {
+      var klim = (i === limit - 1 && parity === 111) ? 1 : 2;
+      for (var k = 0; k < klim; k++) {
+        var val0 = (src[i] >> (k * 4)) & 3, val1 = (src[i] >> (2 + k * 4)) & 3;
+        var num = 0;
+        if (code !== 4) code = val0;
+        if (code === 0) { num = val1 + 3; val0 = 0; val1 = 0; }
+        else if (code === 3) { num = val1 + 7; val0 = 0; val1 = 0; }
+        else if (code === 1) { code = 4; sup = val1; num = 1; val0 = val1; }
+        else if (code === 2) { num = 1; val0 = val1; }
+        else if (code === 4) {
+          code = -1; num = 2;
+          if (sup === 0 && val0 === 0 && val1 === 0) num = 39;
+        }
+        if (outBits + num * 2 > out.length * 8) throw new Error('rle 输出越界');
+        for (var n = 0; n < num; n++) {
+          var v = (n & 1) === 0 ? val0 : val1;
+          var bi = outBits >> 3, sh = outBits & 7;
+          out[bi] |= (v << sh) & 0xFF;
+          outBits += 2;
+        }
+      }
+    }
+    return out.subarray(0, (outBits + 7) >> 3);
+  }
+
+  function groundXorPatch(base, delta) {
+    var n = Math.max(base.length, delta.length);
+    var out = new Uint8Array(n);
+    var common = Math.min(base.length, delta.length), i;
+    for (i = 0; i < common; i++) out[i] = base[i] ^ delta[i];
+    if (delta.length > base.length) out.set(delta.subarray(common), common);
+    else out.set(base.subarray(common), common);
+    return out;
+  }
+
+  function groundNewHist() {
+    return { entries: new Array(GROUND_DELTA_HIST), nos: new Array(GROUND_DELTA_HIST),
+             valid: new Array(GROUND_DELTA_HIST) };
+  }
+
+  function groundHistApply(hist, full, packetNoDelta, nextPacketNo, packed) {
+    var result;
+    if (full) {
+      result = packed;
+    } else {
+      if (packetNoDelta >= GROUND_DELTA_HIST) throw new Error('delta 距离 ' + packetNoDelta);
+      var baseNo = (nextPacketNo - packetNoDelta) >>> 0;
+      var slot = baseNo % GROUND_DELTA_HIST;
+      var tag = baseNo & 0x1FFF;
+      if (!hist.valid[slot] || hist.nos[slot] !== tag || !hist.entries[slot]) {
+        throw new Error('delta 基线缺失 ' + baseNo);
+      }
+      result = groundXorPatch(hist.entries[slot], groundRle0ki(packed));
+    }
+    var s = nextPacketNo % GROUND_DELTA_HIST;
+    hist.entries[s] = result;
+    hist.nos[s] = nextPacketNo & 0x1FFF;
+    hist.valid[s] = true;
+    return result;
+  }
+
+  /** parseVehiclePosition：返回 {x, y(高度), z} 或 null。 */
+  function groundVehiclePos(data, hasDir) {
+    var r = new BitReader(data);
+    r.byte();                                  // 记录头
+    if (!r.bits(1)) return null;               // hasPosition
+    if (hasDir) {
+      r.skip(4 * 32);
+      if (r.bits(1)) r.skip(21 * 32);
+    } else {
+      r.skip(3 * 16);
+    }
+    r.bits(1);
+    var full = r.bits(1);
+    var x, y, z;
+    if (full) {
+      x = groundF32(r); y = groundF32(r); z = groundF32(r);
+    } else {
+      var tv1 = r.u32(), tv2 = r.u32();
+      var fx = Math.fround(tv1 >>> 10) * Math.fround(4.7683727e-7) - 1;
+      x = groundClamp(fx) * 36000;
+      y = Math.fround(((tv1 & 0x3FF) << 10) | (tv2 >>> 22)) * Math.fround(0.007629402) - 100;
+      var fz = Math.fround(tv2 & 0x3FFFFF) * Math.fround(4.7683727e-7) - 1;
+      z = groundClamp(fz) * 36000;
+    }
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return null;
+    if (Math.abs(x) > 1000000 || Math.abs(y) > 1000000 || Math.abs(z) > 1000000) return null;
+    return { x: x, y: y, z: z };
+  }
+
+  function groundParsePacket(pl, tick, hists, out, stats) {
+    var r = new BitReader(pl.subarray(4));
+    var bodyBits = r.compressed();
+    r.align();
+    var nb = Math.ceil(bodyBits / 8);
+    if (nb <= 0 || nb > 1 << 20 || (r.pos >> 3) + nb > r.d.length) throw new Error('body 长度');
+    var g = new BitReader(r.bytesN(nb));
+    var lower = g.u16(), upper = g.u16();
+    g.u32();                                   // 同步时刻
+    g.u16();                                   // 可靠性序号
+    if (!(lower < upper && upper <= GROUND_UID_MAX)) throw new Error('uid 范围');
+    for (var uid = lower; uid < upper; uid++) {
+      if (!g.bits(1)) continue;                // hasUnit
+      g.bits(1);
+      if (g.bits(1)) g.skip(4);
+      var v2 = g.bits(1), v3 = g.bits(1);
+      if (v2 && v3) continue;
+      g.bits(1);
+      var hasDir = g.bits(1);
+      var turrets = g.byte();
+      var compressed = g.bits(1);
+      if (!compressed) throw new Error('未压缩地面体');
+      var full = g.bits(1);
+      var pnd = groundBitsLE(g, 5), npn = groundBitsLE(g, 13);
+      var size = g.compressed();
+      g.align();
+      if (size <= 0 || size > GROUND_MAX_DELTA || (g.pos >> 3) + size > g.d.length) {
+        throw new Error('delta 长度 ' + size);
+      }
+      var packed = g.bytesN(size);
+      var h = hists[uid] || (hists[uid] = groundNewHist());
+      var body = groundHistApply(h, full, pnd, npn, packed);
+      var pos = groundVehiclePos(body, hasDir);
+      if (pos) {
+        var arr = out[uid] || (out[uid] = []);
+        arr.push([tick, pos.x, pos.z, pos.y]);   // [tick, x, north, 高度]
+        stats.samples++;
+      }
+      if (g.bits(1)) g.skip(4 * 32);
+      if (g.bits(1)) {
+        for (var ti = 0; ti < turrets; ti++) {
+          if (!g.bits(1)) continue;
+          g.byte(); g.skip(64);
+          var ammo = g.byte();
+          g.skip(ammo * 16);
+        }
+      }
+      if (g.bits(1)) {
+        if (g.bits(1)) {
+          var seeker = g.u32();
+          if (seeker > 1 << 20) throw new Error('seeker 长度');
+          g.skip(seeker);
+        }
+      }
+      g.align();
+    }
+  }
+
+  function parseGroundSync(payload, pk) {
+    var hists = {}, samples = {};
+    var stats = { packets: 0, uids: 0, samples: 0, errors: 0, lastError: null };
+    for (var i = 0; i < pk.length; i++) {
+      var p = pk[i];
+      if (p.ptype !== 4) continue;
+      var pl = payload.subarray(p.start + p.hl, p.end);
+      if (pl.length < 8) continue;
+      if (!(pl[0] === 0x02 && pl[1] === 0x58 &&
+            (pl[2] === GROUND_MPI_IDS[0] || pl[2] === GROUND_MPI_IDS[1]) && pl[3] === 0xF0)) continue;
+      stats.packets++;
+      try {
+        groundParsePacket(pl, p.ms * TICK_PER_MS, hists, samples, stats);
+      } catch (e) {
+        stats.errors++;
+        stats.lastError = String(e && e.message ? e.message : e);
+      }
+    }
+    var keep = {};
+    Object.keys(samples).forEach(function (k) {
+      if (samples[k].length >= MIN_TRACK_SAMPLES) keep[k] = samples[k];
+    });
+    stats.uids = Object.keys(keep).length;
+    return { samples: keep, stats: stats };
+  }
+
+  /* ------------------------------------------------ 12.6 弹药同步弹道（0xF0DB / 0xF11A）
+   * 包体：`02 58` + msgId u16（0xF0DB shell / 0xF11A rocket），其后
+   *   [ULEB 位长][字节对齐][位流体]；体里 3 组 class（0=火箭/导弹、1=炸弹、2=鱼雷），
+   *   每组一个字节计数，每条记录：hasGuidance, noExtraTail, entity u32, isRaw, 坐标,
+   *   可选尾部（3×u32、6×u16、flags、seeker…）。
+   * 解析参考上游 wrpl/packet/parser/projectiles/positions.go（AGPL-3.0），按位重写。 */
+
+  function wsValid(x, y, z) {
+    return isFinite(x) && isFinite(y) && isFinite(z) &&
+           Math.abs(x) <= 10000000 && Math.abs(y) <= 10000000 && Math.abs(z) <= 10000000;
+  }
+
+  function wsClampUnit(v) { return v < -1 ? -1 : (v > 1 ? 1 : v); }
+
+  function wsConsumeTail(r, hasGuidance) {
+    r.compressed();                       /* 尾部标量（上游记为 zig-zag） */
+    var i;
+    for (i = 0; i < 3; i++) r.u32();
+    for (i = 0; i < 6; i++) r.u16();
+    if (r.bits(1)) r.u16();
+    var flags = r.byte();
+    for (var f = 1; f <= 8; f <<= 1) if (flags & f) r.compressed();
+    if (!hasGuidance) {
+      r.u32();                            /* seeker 计时（秒） */
+      r.bits(1);
+      var size = r.u16();
+      r.skip(size);
+    } else if (r.bits(1)) {
+      throw new Error('SACLOS 未解');
+    }
+  }
+
+  function wsRecord(r, tick) {
+    var hasGuidance = r.bits(1) === 1;
+    var noExtraTail = r.bits(1) === 1;
+    var entity = r.u32();
+    var isRaw = r.bits(1) === 1;
+    var x, y, z;
+    if (isRaw) {
+      x = groundF32(r); y = groundF32(r); z = groundF32(r);
+    } else {
+      var c1 = r.u32(), c2 = r.u32();
+      x = wsClampUnit((c1 >>> 10) / 2097152 - 1) * 15000;
+      y = wsClampUnit(((((c1 & 0x3FF) << 10) | (c2 >>> 22)) / 524288) - 1) * 15000;
+      z = wsClampUnit(((c2 & 0x3FFFFF) / 2097152) - 1) * 15000;
+    }
+    if (!noExtraTail) wsConsumeTail(r, hasGuidance);
+    if (!wsValid(x, y, z)) return null;
+    return { tick: tick, entity: entity, x: x, y: y, z: z };
+  }
+
+  function parseWeaponSync(payload, pk) {
+    var rockets = {}, bombs = {};
+    var stats = { packets: 0, records: 0, rockets: 0, bombs: 0, errors: 0, lastError: null };
+    for (var i = 0; i < pk.length; i++) {
+      var p = pk[i];
+      if (p.ptype !== 4) continue;
+      var pl = payload.subarray(p.start + p.hl, p.end);
+      if (pl.length < 8 || pl[0] !== 0x02 || pl[1] !== 0x58) continue;
+      var msgId = pl[2] | (pl[3] << 8);
+      if (msgId !== 0xF0DB && msgId !== 0xF11A) continue;
+      stats.packets++;
+      try {
+        var r = new BitReader(pl.subarray(4));
+        var bodyBits = r.compressed();
+        r.align();
+        var nb = Math.ceil(bodyBits / 8);
+        if (nb <= 0 || nb > (1 << 22) || (r.pos >> 3) + nb > r.d.length) throw new Error('体长度');
+        var body = new BitReader(r.bytesN(nb));
+        for (var cls = 0; cls < 3; cls++) {
+          var count = body.byte();
+          for (var k = 0; k < count; k++) {
+            var rec = wsRecord(body, p.ms * TICK_PER_MS);
+            stats.records++;
+            if (!rec) continue;
+            if (cls === 0) {
+              var arr = rockets[String(rec.entity)] || (rockets[String(rec.entity)] = []);
+              arr.push(rec);
+            } else if (cls === 1) {
+              var brr = bombs[String(rec.entity)] || (bombs[String(rec.entity)] = []);
+              brr.push(rec);
+            }
+          }
+        }
+      } catch (e) {
+        stats.errors++;
+        stats.lastError = String(e && e.message ? e.message : e);
+      }
+    }
+    var rockN = Object.keys(rockets).length;
+    stats.rockets = rockN;
+    stats.bombs = Object.keys(bombs).length;
+    return { rockets: rockets, bombs: bombs, stats: stats };
+  }
+
+  /** uid → ECS 地面构造点。先按真实 uid 精确绑定（块内 uid 规则）；
+   *  剩下的再用「首采样与构造点水平距离 ≤10 m 且最近者唯一」兜底。都不猜型号。 */
+  function bindGroundTracks(groundRows, groundSync) {
+    var samples = groundSync.samples, bound = {}, used = {}, ok = 0, byUid = 0;
+    // 1) 精确 uid
+    groundRows.forEach(function (g, i) {
+      if (g.groundUid === null || g.groundUid === undefined) return;
+      var s = samples[String(g.groundUid)];
+      if (!s || !s.length) return;
+      bound[i] = { uid: String(g.groundUid), samples: s };
+      used[i] = 1; ok++; byUid++;
+    });
+    // 2) 位置兜底
+    Object.keys(samples).forEach(function (uid) {
+      if (Object.keys(bound).some(function (k) { return bound[k].uid === uid; })) return;
+      var s = samples[uid];
+      var fx = s[0][1], fy = s[0][2];
+      var best = -1, bd = 1e18, second = 1e18;
+      for (var i = 0; i < groundRows.length; i++) {
+        if (used[i]) continue;
+        var g = groundRows[i];
+        var d = Math.hypot(g.x - fx, g.y - fy);
+        if (d < bd) { second = bd; bd = d; best = i; }
+        else if (d < second) second = d;
+      }
+      if (best < 0 || bd > GROUND_SPAWN_MATCH_M) return;
+      if (second < 1e17 && second < bd * 3.0) return;   // 两个候选都贴得很近：不猜
+      used[best] = 1; bound[best] = { uid: uid, samples: s };
+      ok++;
+    });
+    return { bound: bound, matched: ok, byUid: byUid, uids: Object.keys(samples).length };
+  }
+
+  /* ------------------------------------------------ 12.5 玩家槽位（0xF02D）
+   * 包体：签名 02 58 2d f0，其后 [compressed 标志][可选 zstd（压缩/解压长度 ULEB）]
+   * [u16 消息数][每条：u16 长度, oid u16, 可选 ext uid, 消息体]。
+   * oid>>11 == 0xE 的消息是玩家槽位：IdFieldSerializer255，字段 2=uid(玩家id+65字节名)、
+   * 5=战队、6=称号、9=team、41=真实昵称。
+   * 解析参考上游 wrpl/packet/parser/slot/main.go（AGPL-3.0），按位重写。 */
+
+  function slotReadSize(br) {
+    var h = br.bits(3);
+    if (h === 1) return 1;
+    if (h === 2) return 8;
+    if (h === 3) return 16;
+    if (h === 4) return 32;
+    if (h === 5) return 64;
+    if (h === 6) return 96;
+    if (h === 7) return 128;
+    return br.compressed();          // 自定义位数
+  }
+
+  function readBitsBytes(br, nbits) {
+    var out = new Uint8Array((nbits + 7) >> 3);
+    for (var i = 0; i < nbits; i++) {
+      if (br.bits(1)) out[i >> 3] |= 1 << (7 - (i & 7));
+    }
+    return out;
+  }
+
+  function slotLenStr(br) {
+    var n = br.byte();
+    return utf8(readBitsBytes(br, n * 8), 0, n);
+  }
+
+  function parseSlotPlayerMessage(msg) {
+    var br = new BitReader(msg);
+    var off = br.u16();
+    var cnt = br.u16();
+    var nfields = cnt & 0xFFF, bpi = cnt >> 12;
+    if (nfields === 0 || nfields >= 255) return null;
+    var startBody = br.pos;
+    br.pos = off * 8;
+    var sizes = [];
+    for (var i = 0; i < nfields; i++) sizes.push(slotReadSize(br));
+    var bitsForIdx = Math.ceil((bpi * nfields) / 8) * 8;
+    br.pos = startBody - 32 + off * 8 - bitsForIdx;
+    var idxs = [];
+    for (var j = 0; j < nfields; j++) idxs.push(groundBitsLE(br, bpi));
+    br.pos = startBody;
+    var out = {};
+    for (var k = 0; k < nfields; k++) {
+      var raw = readBitsBytes(br, sizes[k]);
+      var f = new BitReader(raw);
+      var idx = idxs[k];
+      try {
+        if (idx === 2) {
+          var lo = f.u32(), hi = f.u32();
+          out.playerId = lo + hi * 4294967296;
+          var nb = readBitsBytes(f, 65 * 8);
+          var end = 0;
+          while (end < nb.length && nb[end] !== 0) end++;
+          out.name = utf8(nb, 0, end);
+        } else if (idx === 5) out.clan = slotLenStr(f);
+        else if (idx === 6) out.title = slotLenStr(f);
+        else if (idx === 9) out.team = f.byte();
+        else if (idx === 41) out.realNick = slotLenStr(f);
+      } catch (e) { /* 单字段坏了不影响其它字段 */ }
+    }
+    return (out.name || out.team) ? out : null;
+  }
+
+  function parseSlotPlayers(payload, pk) {
+    var players = {}, stats = { packets: 0, messages: 0, players: 0, errors: 0, lastError: null };
+    var fz = global.fzstd || (global.self && global.self.fzstd);
+    for (var i = 0; i < pk.length; i++) {
+      var p = pk[i];
+      if (p.ptype !== 4) continue;
+      var pl = payload.subarray(p.start + p.hl, p.end);
+      if (pl.length < 8) continue;
+      if (!(pl[0] === 0x02 && pl[1] === 0x58 && pl[2] === 0x2D && pl[3] === 0xF0)) continue;
+      stats.packets++;
+      try {
+        var r = new BitReader(pl.subarray(4));
+        var compressed = r.byte();
+        var br = r;
+        if (compressed > 0) {
+          r.compressed(); r.compressed();          // 压缩后/解压后长度
+          if (!fz || typeof fz.decompress !== 'function') throw new Error('缺少 fzstd');
+          br = new BitReader(fz.decompress(pl.subarray(4 + (r.pos >> 3))));
+        }
+        var mc = br.u16();
+        for (var mi = 0; mi < mc; mi++) {
+          var mlen = br.u16();
+          var before = br.pos;
+          var oid = br.u16();
+          if ((oid & 0x7FF) === 0x7FF && oid !== 0xFFFF) br.compressed();
+          var after = br.pos;
+          var nbytes = mlen - ((after - before) >> 3);
+          if (nbytes < 0 || nbytes > (br.n - br.pos) >> 3) throw new Error('slot 消息长度');
+          var msg = readBitsBytes(br, nbytes * 8);
+          if ((oid >> 11) === 0xE) {
+            stats.messages++;
+            var idx = oid & 0x7FF;
+            var plr = parseSlotPlayerMessage(msg);
+            if (plr) {
+              var cur = players[idx] || {};
+              Object.keys(plr).forEach(function (key) { if (plr[key] !== undefined && plr[key] !== '') cur[key] = plr[key]; });
+              players[idx] = cur;
+            }
+          }
+        }
+      } catch (e) {
+        stats.errors++;
+        stats.lastError = String(e && e.message ? e.message : e);
+      }
+    }
+    stats.players = Object.keys(players).length;
+    return { players: players, stats: stats };
+  }
+
+  /** 地面航迹：1 Hz 阶梯保持（回放采样中位间隔 5.5 s，插值会造出比数据更平滑的运动）。 */
+  function groundTrackArrays(samples, axis, ysign, alt, hz) {
+    var t0 = axis.sec(samples[0][0]);
+    var tLast = axis.sec(samples[samples.length - 1][0]);
+    var n = Math.floor((tLast - t0) * hz) + 1;
+    if (n < 1) n = 1;
+    var x = new Array(n), y = new Array(n), z = new Array(n), hdg = new Array(n);
+    var si = 0;
+    for (var k = 0; k < n; k++) {
+      var t = t0 + k / hz;
+      while (si + 1 < samples.length && axis.sec(samples[si + 1][0]) <= t) si++;
+      x[k] = rnd(samples[si][1], 1);
+      y[k] = rnd(samples[si][2] * ysign, 1);
+      z[k] = (samples[si][3] !== null && isFinite(samples[si][3])) ? rnd(samples[si][3], 1) : alt;
+      hdg[k] = null;
+    }
+    return { x: x, y: y, z: z, hdg: hdg, n: n, t0: rnd(t0, 3) };
+  }
+
+
+  /** 未绑定到 ECS 构造点的 uid：只要确实移动过（>50 m）就作为无身份地面单位输出，
+   * 与上游 wrpl-acmi 的 "Ground unit <uid>" 同一口径——不按距离猜型号/阵营。 */
+  function buildAnonymousGroundTracks(groundSync, bind, axis, ysign) {
+    var boundUids = {};
+    Object.keys(bind.bound).forEach(function (k) { boundUids[bind.bound[k].uid] = 1; });
+    var out = [];
+    Object.keys(groundSync.samples).forEach(function (uid) {
+      if (boundUids[uid]) return;
+      var s = groundSync.samples[uid];
+      var x0 = s[0][1], y0 = s[0][2], moved = 0;
+      for (var i = 1; i < s.length; i++) {
+        var d = Math.hypot(s[i][1] - x0, s[i][2] - y0);
+        if (d > moved) moved = d;
+      }
+      if (moved < 50.0) return;                 // 原地不动的匿名点不新增，免得和静态点重复
+      var tr = groundTrackArrays(s, axis, ysign, null, 1);
+      out.push({
+        key: 'gnd-uid-' + uid, side: 'unknown', sideDecoded: null, sideInferred: false,
+        domain: 'ground', 'class': 'ground', vehicle: null,
+        vehicleSource: 'ground-sync(0xF073)', vehicleName: 'GROUND UNIT',
+        vehicleCategory: '', hidden: false, template: null, unitClassName: null,
+        player: null, hasAlt: true, 'static': false, groundUid: parseInt(uid, 10),
+        t0: tr.t0, hz: 1, n: tr.n, x: tr.x, y: tr.y, z: tr.z, hdg: tr.hdg,
+        deathTickRaw: null, deathKind: null, killerUid: null,
+        entityId: null, gridClass: 'ground', spawnTickRaw: s[0][0]
+      });
+    });
+    return out;
+  }
+
+  function buildGroundUnits(ground, axis, display, centers, hiddenAll, bound, ysign, authorTeam) {
     var out = [];
     (ground || []).forEach(function (g, idx) {
       var x = finiteM(g.x), y = finiteM(g.y), z = finiteM(g.z);
-      if (x === null || y === null) return;
+      var b = bound ? bound[idx] : null;
+      if (!b && (x === null || y === null)) return;   /* 有同步位置的可以没有构造点坐标 */
       var tpl = g.template;
       var rawClass = g.unitClassName || g.className || null;
       var hiddenHere = !!hiddenAll[rawClass || tpl];
       var code = String(rawClass || tpl || 'obj').toLowerCase().replace(/[^a-z0-9]/g, '') || 'obj';
+      var key = 'gnd-' + code + '-' + ('00' + (idx + 1)).slice(-3);
       var tick = g.spawnTickRaw;
-      var sd = groundSide(x, y, centers);
+      var team = (g.groundTeam === 1 || g.groundTeam === 2) ? g.groundTeam : null;
+      var teamSide = (team !== null && (authorTeam === 1 || authorTeam === 2))
+        ? (team === authorTeam ? 'ally' : 'enemy') : null;
+      var sd = teamSide || groundSide(x, y, centers);
+      var sideSrc = teamSide ? 'ecs:team' : 'nearest-spawn-center';
+      if (b) {
+        /* 有同步位置：真正会动的单位。高度优先用同步包里的高度，缺失才回落到 ECS 构造点。 */
+        var tr = groundTrackArrays(b.samples, axis, ysign, z === null ? null : rnd(z, 1), 1);
+        out.push({
+          key: key,
+          side: sd, sideDecoded: teamSide, sideInferred: !teamSide && sd !== 'unknown',
+          sideSource: sideSrc, groundTeam: team,
+          domain: 'ground', 'class': 'ground',
+          vehicle: rawClass || tpl, vehicleSource: 'ecs+ground-sync(0xF073)',
+          vehicleName: hiddenHere ? '' : ((display[rawClass || String(tpl || '')] || rawClass || tpl)),
+          vehicleCategory: VEHICLE_CATEGORIES[rawClass || ''] || 'UNKNOWN',
+          hidden: hiddenHere, template: tpl, unitClassName: rawClass,
+          player: null, hasAlt: z !== null, 'static': false,
+          groundUid: parseInt(b.uid, 10),
+          t0: tr.t0, hz: 1, n: tr.n,
+          x: tr.x, y: tr.y, z: tr.z, hdg: tr.hdg,
+          deathTickRaw: g.destroyedTickRaw === undefined ? null : g.destroyedTickRaw,
+          deathKind: g.destroyedTickRaw == null ? null : 'destroyed', killerUid: null,
+          entityId: g.entityId, gridClass: g['class'], spawnTickRaw: tick
+        });
+        return;
+      }
       out.push({
-        key: 'gnd-' + code + '-' + ('00' + (idx + 1)).slice(-3),
-        side: sd, sideDecoded: null, sideInferred: sd !== null,
+        key: key,
+        side: sd, sideDecoded: teamSide, sideInferred: !teamSide && sd !== 'unknown',
+        sideSource: sideSrc, groundTeam: team,
         domain: 'ground', 'class': 'ground',
         vehicle: rawClass || tpl, vehicleSource: 'ground.json',
         vehicleName: hiddenHere ? '' : ((display[rawClass || String(tpl || '')] || rawClass || tpl)),
         vehicleCategory: VEHICLE_CATEGORIES[rawClass || ''] || 'UNKNOWN',
         hidden: hiddenHere, template: tpl, unitClassName: rawClass,
         player: null, hasAlt: true, 'static': true,
+        groundUid: g.groundUid === undefined ? null : g.groundUid,
         t0: tick !== null && tick !== undefined ? Math.max(0.0, rnd(axis.sec(tick), 3)) : 0.0,
         hz: 1, n: 1,
         x: [rnd(x, 0)], y: [rnd(y, 0)], z: [rnd(z, 1)],
         /* 静态点：hdg 单元素数组；来自 transform 四元数，取不到为 null */
         hdg: [g.hdgDeg === undefined || g.hdgDeg === null ? null : g.hdgDeg],
-        deathTickRaw: null, deathKind: null, killerUid: null,
+        deathTickRaw: g.destroyedTickRaw === undefined ? null : g.destroyedTickRaw,
+        deathKind: g.destroyedTickRaw == null ? null : 'destroyed', killerUid: null,
         entityId: g.entityId, gridClass: g['class'], spawnTickRaw: tick
       });
     });
@@ -2076,6 +2722,16 @@
   }
 
   function buildSquad(players, results, uidMap, ownUid, killsByUid, deathsByUid, kpCount) {
+    var slotUidByUserId = {};
+    Object.keys(uidMap).forEach(function (k) {
+      var v = uidMap[k];
+      if (!v || !v.playerUserId) return;
+      var u = String(v.playerUserId);
+      slotUidByUserId[u] = (slotUidByUserId[u] === undefined) ? parseInt(k, 10) : 'dup';
+    });
+    Object.keys(slotUidByUserId).forEach(function (u) {
+      if (slotUidByUserId[u] === 'dup') delete slotUidByUserId[u];
+    });
     var authorId = String(results.authorUserId || '');
     var arow = players.filter(function (x) { return String(x.userId) === authorId; })[0] ||
                players.filter(function (x) { return x.name === results.author; })[0];
@@ -2087,6 +2743,10 @@
       var veh = (x.vehicles || [])[0] || null;
       var uid = (isAuthor && ownUid !== null) ? ownUid : null;
       var uidSrc = uid !== null ? 'own-uid（本机由回放自身的本机属性表（ReplayCockpitParams）高度剖面锚定）' : null;
+      if (uid === null && slotUidByUserId[String(x.userId)] !== undefined) {
+        uid = slotUidByUserId[String(x.userId)];
+        uidSrc = 'slot(unit__playerId) + 结算 userId（精确）';
+      }
       var ev = null;
       if (uid === null) {
         var step1 = Object.keys(uidMap).map(function (k) { return parseInt(k, 10); })
@@ -2243,12 +2903,13 @@
   /** 把解析好的 ACE_MISSION 收成主线程对象：分片消息按 key 合并。 */
   function recvPartStore() {
     return { meta: null, own: null, units: [], events: null, shots: null, runways: null,
-             airfields: null, terrain: undefined, names: undefined, __attitude: undefined };
+             airfields: null, missiles: [], terrain: undefined, names: undefined, __attitude: undefined };
   }
 
   function assembleMission(store) {
     return { meta: store.meta, own: store.own, units: store.units, events: store.events,
              shots: store.shots, runways: store.runways, airfields: store.airfields,
+             missiles: store.missiles || [],
              terrain: store.terrain === undefined ? null : store.terrain,
              names: store.names === undefined ? {} : store.names,
              __attitude: store.__attitude };
@@ -2599,6 +3260,11 @@
     }
     await sleep0();
 
+    var eidDeath = {};
+    ecs.destructions.forEach(function (d) {
+      if (!(String(d.eid) in eidDeath) || d.tick < eidDeath[String(d.eid)]) eidDeath[String(d.eid)] = d.tick;
+    });
+
     var groundRows = [], airfieldStructs = [], launchRows = [];
     ecs.creations.forEach(function (cr) {
       var klass = classifyTemplate(cr.name);
@@ -2616,11 +3282,19 @@
          * 地面单位**不渲染朝向**，但阵营判据要用它（见 meta.limits）。取不到就 null，不猜。 */
         var gq = (klass === 'ground' || klass === 'structure') ? readTransformQuat(blk, vs) : null;
         var gHdg = gq ? rnd(quatHeadingDeg(gq), 1) : null;
-        if (pos) {
+        var gid = (klass === 'ground' || klass === 'structure') ? groundIdentity(blk) : null;
+        var hasUid = !!(gid && gid.uid !== undefined);
+        /* 新版回放的块布局可能变了（固定偏移取不到位置），但 uid/team 规则仍然有效：
+         * 这类行不放弃，按 uid 绑同步位置后照样能画；没有位置也没有 uid 的才跳过。 */
+        if (pos || hasUid) {
           groundRows.push({ entityId: '0x' + cr.eid.toString(16), entityIndex: cr.eid & 0x3FFFFF,
                             template: cr.name, 'class': klass,
                             unitClassName: findGroundClassname(blk) || null,
-                            spawnTickRaw: cr.tick, x: pos[0], y: pos[2], z: pos[1],
+                            groundUid: hasUid ? gid.uid : null,
+                            groundTeam: gid && gid.team !== undefined ? gid.team : null,
+                            spawnTickRaw: cr.tick,
+                            destroyedTickRaw: eidDeath[String(cr.eid)] === undefined ? null : eidDeath[String(cr.eid)],
+                            x: pos ? pos[0] : null, y: pos ? pos[2] : null, z: pos ? pos[1] : null,
                             hdgDeg: gHdg });
         }
       }
@@ -2660,6 +3334,16 @@
                     ' / 机场 ' + runwayData.airfields.length + ' / 弹药 ' + launchRows.length);
     await sleep0();
 
+    // ---- 地面同步位置（ptype=4 MPI 0xF073/0xF074）→ 绑定到 ECS 构造点
+    var groundSync = parseGroundSync(payload, pk);
+    var groundBind = bindGroundTracks(groundRows, groundSync);
+    var weaponPos = parseWeaponSync(payload, pk);
+    emit('ecs', 73, '弹药同步 ' + weaponPos.stats.rockets + ' 个导弹实体 / ' +
+                    weaponPos.stats.bombs + ' 个炸弹实体（' + weaponPos.stats.errors + ' 包失败）');
+    emit('ecs', 72, '地面同步 ' + groundSync.stats.uids + ' uid / ' +
+                    groundSync.stats.samples + ' 采样 → 绑定 ' + groundBind.matched + ' 个 ECS 点');
+    await sleep0();
+
     // ---- 结算 BLK（玩家表 / 作者 / squadId）
     emit('blk', 74, '解析结算 BLK');
     var results = {}, blkMeta = null;
@@ -2692,8 +3376,15 @@
     emit('own', 78, '本机 uid=' + ownUid + '（' + ownPick.how + '）');
     await sleep0();
 
+    // ---- 玩家槽位（ptype=4 MPI 0xF02D）→ 玩家名字/队伍/氏族
+    var slotData = parseSlotPlayers(payload, pk);
+    if (opts.debug) opts.debug.slotStats = slotData.stats;
+    emit('slot', 76, '玩家槽位 ' + slotData.stats.players + ' 人 / ' +
+                     slotData.stats.messages + ' 条消息');
+    await sleep0();
+
     // ---- uid_map（ECS → 载具/玩家/阵营）
-    var um = buildUidMap(ecs, players, results, ownUid);
+    var um = buildUidMap(ecs, players, results, ownUid, slotData.players);
     var uidMap = um.map;
     // 本机锚定后重新选一次（uid_map 现在有 vehicle/player）
     var ownPick2 = pickOwnUnit(trackUnits, authorVeh, ownProps, axisProbe, uidMap);
@@ -2771,6 +3462,28 @@
     var yv = decideYFlip(unitRowsByUid, ownUid, axisFromClockSeries(ownProps.hdg_deg, axis), axis);
     var ysign = yv.flip ? -1.0 : 1.0;
 
+    // 导弹弹道（只取 class 0；弹体不画，场景里做白色虚线）
+    var missiles = [];
+    Object.keys(weaponPos.rockets).forEach(function (ent) {
+      var raw = weaponPos.rockets[ent].slice().sort(function (a, b) { return a.tick - b.tick; });
+      var pts = [];
+      raw.forEach(function (r0) {
+        if (pts.length && r0.tick <= pts[pts.length - 1].tick) return;
+        if (Math.abs(r0.x) > 45000 || Math.abs(r0.z) > 45000) return;
+        pts.push(r0);
+      });
+      if (pts.length < 2) return;
+      var t = [], x = [], y = [], z = [];
+      pts.forEach(function (r0) {
+        t.push(rnd(axis.sec(r0.tick), 3));
+        x.push(rnd(r0.x, 1));
+        y.push(rnd(r0.z * ysign, 1));
+        z.push(rnd(r0.y, 1));
+      });
+      missiles.push({ entity: parseInt(ent, 10), t0: t[0], n: t.length, t: t, x: x, y: y, z: z });
+    });
+    missiles.sort(function (a, b) { return (a.t0 - b.t0) || (a.entity - b.entity); });
+
     // ---- units（空中）+ 地面
     var displayNames = {}, hiddenAll = {};
     HIDDEN_TEMPLATES.concat(HIDDEN_EXTRA).forEach(function (k) { hiddenAll[k] = 1; });
@@ -2799,6 +3512,29 @@
     var bu = buildUnits({ units: tracksUnits }, axis, ownEntityIds, ysign, uidMap, vHints,
                         sideFinalMap, displayNames, deaths, hiddenAll, ownUid);
     var units = bu.units;
+    (function patchAirDeathByEcs() {
+      var deathByUid = {};
+      Object.keys(uidMap).forEach(function (u) {
+        var e = uidMap[u] && uidMap[u].entityId;
+        if (!e) return;
+        var t = eidDeath[String(parseInt(e, 16))];
+        if (t !== undefined) deathByUid[u] = t;
+      });
+      var patched = 0;
+      units.forEach(function (u) {
+        if (u.domain !== 'air') return;
+        var t = deathByUid[String(u.uid)];
+        if (t === undefined) return;
+        var endTick = (u.t0 + (u.n - 1) / (u.hz || 10)) / axis.sec_per_tick + axis.tick0;
+        if (t < axis.tick0 || t > endTick + axis.raw_per_ms * 1000) return;   /* 不在该段内：不裁 */
+        if (u.deathTickRaw == null || t < u.deathTickRaw) {
+          u.deathTickRaw = t;
+          u.deathKind = 'destroyed';
+          patched++;
+        }
+      });
+      if (opts.debug) opts.debug.airDeathPatched = patched;
+    })();
     emit('units', 88, '空中航迹 ' + units.length + ' 条');
     await sleep0();
 
@@ -2863,9 +3599,12 @@
         fixed, flipped.length, flipped.join(', ') || '无', kept);
     })();
 
-    // ---- 地面单位
-    var groundUnits = buildGroundUnits(groundRows, axis, displayNames, sideFin.centers, hiddenAll);
-    units = units.concat(groundUnits);
+    // ---- 地面单位（阵营优先用 ECS 的 team 组件，取不到才回落到出生中心推断）
+    var authorTeam = authorRow ? authorRow.team : null;
+    var groundUnits = buildGroundUnits(groundRows, axis, displayNames, sideFin.centers, hiddenAll,
+                                       groundBind.bound, ysign, authorTeam);
+    var groundAnon = buildAnonymousGroundTracks(groundSync, groundBind, axis, ysign);
+    units = units.concat(groundUnits, groundAnon);
     units.sort(function (a, b) {
       var da = a.domain === 'air' ? 0 : 1, db = b.domain === 'air' ? 0 : 1;
       return (da - db) || (a.t0 - b.t0) || cmpStr(a.key, b.key);
@@ -2900,6 +3639,14 @@
       ownSamples: bo.own.n, trackCount: units.length,
       airTracks: units.filter(function (u) { return u.domain === 'air'; }).length,
       groundTracks: units.filter(function (u) { return u.domain === 'ground'; }).length,
+      groundTracksMoving: units.filter(function (u) { return u.domain === 'ground' && u['static'] === false; }).length,
+      groundSyncUids: groundSync.stats.uids, groundSyncSamples: groundSync.stats.samples,
+      groundSyncPackets: groundSync.stats.packets, groundSyncMatched: groundBind.matched,
+      groundTracksAnonymous: groundAnon.length,
+      missiles: missiles.length,
+      missileSamples: missiles.reduce(function (n2, m) { return n2 + m.n; }, 0),
+      groundTeamKnown: units.filter(function (u) { return u.domain === 'ground' && u.groundTeam != null; }).length,
+      groundSideFromTeam: units.filter(function (u) { return u.domain === 'ground' && u.sideSource === 'ecs:team'; }).length,
       groundUnits: groundUnits.length, shots: bs2.shots.length,
       unitsWithSide: units.filter(function (u) { return u.side !== 'unknown'; }).length,
       unitsWithDisplayName: units.filter(function (u) { return !!u.vehicleName; }).length,
@@ -2922,6 +3669,7 @@
 
     var player = {
       name: playerName, vehicle: authorVeh,
+      vehicleName: authorVeh ? (DISPLAY_NAMES[authorVeh] || String(authorVeh).toUpperCase()) : null,
       callsign: authorRow && authorRow.clanTag ? authorRow.clanTag.replace(/^[=\s]+|[=\s]+$/g, '') || null : null,
       userId: authorId || null, clanTag: (authorRow && authorRow.clanTag) || null,
       team: authorRow ? authorRow.team : null, slot: authorRow ? authorRow.slot : null,
@@ -2942,7 +3690,21 @@
       ' ReplayCockpitParams 属性表（约 4 Hz，插值到 10 Hz）；回放确实没有的通道（迎角 aoa、弹药 ammo）留 null。',
       '他机身份来自 ptype=6 ECS 的 uid → 载具映射；映射不到的保持 unknown/null，不用外部数据补。',
       'side 的主来源是纯回放的（击杀关系二色 + 出生位置聚类），ECS 原始取值保留在 units[].sideDecoded。',
-      '地面点位的阵营是**推定**（到两个阵营出生中心的最近距离）。',
+      '地面阵营优先用回放 ECS 的 team 组件（int32，1=蓝 2=红）：块内型号串第一次出现−60 是 uid、' +
+      '最后一次出现−5 是 team；6 份回放 715 个地面单位与上游 wrpl-acmi 的 ecs:team 逐单位一致（0 分歧）。' +
+      '取不到 team 时才回落到出生中心推断（sideInferred=true）。',
+      '地面同步位置来自 ptype=4 的 MPI 0xF073/0xF074（GroundModelPositions，增量+RLE），' +
+      '本局 ' + groundSync.stats.packets + ' 包 / ' + groundSync.stats.uids + ' uid / ' +
+      groundSync.stats.samples + ' 采样；按首采样与 ECS 构造点水平距离 ≤' + GROUND_SPAWN_MATCH_M +
+      ' m 唯一绑定，绑定 ' + groundBind.matched + ' 个；绑不上的静态点原样保留，不按距离猜实体。' +
+      '1 Hz 阶梯保持：不插值，避免造出比回放采样（中位 5.5 s）更平滑的运动。',
+      '地面同步 uids 里绑定不到 ECS 构造点、但确实移动过的，输出为无身份地面单位（vehicle=null、' +
+      'vehicleName=GROUND UNIT、side=unknown），与上游 wrpl-acmi 的 Ground unit 口径一致；本局 ' +
+      groundAnon.length + ' 个。不按距离猜型号或阵营。',
+      '导弹弹道来自 ptype=4 的 WeaponSync（0xF0DB / 0xF11A），class 0 记录；' +
+      '弹体不画，场景用白色虚线表示已飞过的航迹；可在设置里关闭。',
+      '地面同步位置自带高度（本局 13–246 m），动起来的地面单位直接用同步高度；' +
+      '取不到时回落到 ECS 构造点高度，不用 0/常量硬套。',
       '源数据里个别瞬时跳变按契约 §5.2 做了包线滤除（与上一个有效采样推算速度 >600 m/s 的点置 null，' +
       '不做平滑），共 ' + counts.envelopeFiltered + ' 点。',
       '显示名（units[].vehicleName）是**显示约定**（内嵌表，来自 War-Thunder-Datamine 的英文名），' +
@@ -2963,7 +3725,8 @@
 
     var meta = {
       source: 'wrpl',
-      sideSource: '空中：击杀关系二色 + 出生位置聚类；地面：到两阵营出生中心的最近距离（纯回放推断，AI 与地面均为推定）',
+      markerNames: Object.keys(markers),
+      sideSource: '空中：击杀关系二色 + 出生位置聚类；地面：ECS team 组件（1=蓝/2=红，取不到才用出生中心推断）',
       replayFile: opts.fileName || null,
       replayHeader: hdr,
       player: player,
@@ -2991,7 +3754,10 @@
         shotsCount: launchRows.length, shotsWithPosition: launchRows.length,
         shotsMedianDistToNearestAircraftM: null, shotsP90DistM: null, shotsWithin100m: null,
         shotsNote: '发射点位置校验由 wrpl-ecs/wrpl-probe 在开发期完成，浏览器版未复算，透传为 null。',
-        groundNote: '地面点位校验（对 8111 地面接触点）只在开发期做过，浏览器版取不到 8111，故为 null。',
+        groundNote: '地面点位校验（对 8111 地面接触点）只在开发期做过，浏览器版取不到 8111，故为 null。' +
+                    '地面同步包在本局解出 ' + groundSync.stats.samples + ' 个位置采样 / ' +
+                    groundSync.stats.uids + ' uid（' + groundSync.stats.errors + ' 个包失败），' +
+                    '其中 ' + groundBind.matched + ' 个 uid 绑定到 ECS 构造点。',
         note: '浏览器版拿不到 8111 真值，所以 8111 派生字段（ownMaxErrM/ownRmsErrM/unitAssocRate/' +
               'groundNearestContactMedianM 等）一律 null；speedViolations 与 killDist* 是本文件在回放内部' +
               '自算的。Python 版同一份回放的数字见 ace-combat/docs/WRPL-JS.md。'
@@ -3006,6 +3772,9 @@
         '本机航迹：' + ownPick2.how + '；他机航迹：ptype=2 实体三维航迹',
         '他机身份：ptype=6 ECS 的 uid→载具/玩家映射（' + Object.keys(uidMap).length + ' 条 uid）',
         '击杀事件字段：击杀包位流（IdFieldSerializer32）；击杀点坐标优先用受击者位置',
+        '导弹弹道：ptype=4 WeaponSync 0xF0DB/0xF11A（class 0），' + missiles.length + ' 条，场景白色虚线',
+        '地面移动：ptype=4 MPI 0xF073/0xF074 增量位置（RLE 0ki + XOR 历史），' +
+          '按 ECS 构造点绑定 uid（≤' + GROUND_SPAWN_MATCH_M + ' m）；解析参考 wrpl-acmi dev 分支',
         '坐标轴：x=fm.PosX, y=fm.PosZ, z=fm.PosY（米）；y 轴处理：' +
           (yv.flip ? '取反' : '保持原样') + '（判据：本机位移方向 vs 回放罗盘，样本 ' + yv.n + '）',
         '结算：.wrpl 内嵌结果块（author=' + playerName + '，' + players.length + ' 名玩家）',
@@ -3025,6 +3794,7 @@
     meta.attitude = { uidCount: attitude.uidCount, points: attitude.points, dt: attitude.dt };
 
     var mission = { meta: meta, own: bo.own, units: units, events: events, shots: bs2.shots,
+                    missiles: missiles,
                     runways: runways, airfields: airfields, terrain: null, names: {},
                     __attitude: attitude };
     emit('done', 100, '完成（' + ((Date.now() - t_start) / 1000).toFixed(2) + ' s）');
@@ -3228,6 +3998,10 @@
     version: '1.0.0-browser',
     _internal: { parsePackets: parsePackets, parseFm: parseFm, readVlqSize: readVlqSize,
                  initStats: initStats, parseMain: parseMain, buildAttitude: buildAttitude,
+                 parseGroundSync: parseGroundSync, bindGroundTracks: bindGroundTracks,
+                 buildGroundUnits: buildGroundUnits, groundTrackArrays: groundTrackArrays,
+                 groundIdentity: groundIdentity, EcsParser: EcsParser, parseSlotPlayers: parseSlotPlayers, parseWeaponSync: parseWeaponSync,
+                 groundRle0ki: groundRle0ki,
                  emit: emit,   /* 只给开发期自验用：把进度状态定在某一帧，便于截图/取证 */
                  parseReplayHeader: parseReplayHeader, locatePacketStream: locatePacketStream,
                  parseFatBlk: parseFatBlk, DISPLAY_NAMES: DISPLAY_NAMES }

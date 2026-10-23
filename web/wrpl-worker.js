@@ -68,7 +68,7 @@ function sendMission(mission, wantDebug, dbg, timings) {
     self.postMessage({ type: 'part', key: 'units', data: chunks[i] });
     parts++;
   }
-  ['events', 'shots', 'runways', 'airfields'].forEach(function (k) {
+  ['events', 'shots', 'runways', 'airfields', 'missiles'].forEach(function (k) {
     self.postMessage({ type: 'part', key: k, data: mission[k] }); parts++;
   });
   /* 飘带用的横滚序列（可能上百 KB）：按 uid 分片发，避免单条 structured clone 太长 */

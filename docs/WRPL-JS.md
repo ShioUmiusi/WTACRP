@@ -155,6 +155,21 @@ unitsWithIdentity 236, unitsVehicleFromPackets 0, killsWithWeapon 30, killsWithW
 8. Python 的 `wrpl_decode.py --validate` 那一整套 8111 拟合（`REL_OFFSET=53.52` 等）没有移植
    —— 它是开发期校验，不是产物的一部分。
 
+
+7. **地面同步位置（`ptype=4` MPI `0xF073` / `0xF074`）是浏览器版新增**：Python 交付管线
+   （`wrpl_decode*.py` / `build_ace_mission.py`）没有这条通道，`mission-data.js` 里的地面单位
+   仍是 ECS 构造点静态点位。浏览器版按上游 wrpl-acmi dev 的位布局重写（RLE 0ki + XOR 历史），
+   本局 788 包 / 118 uid / 7275 采样，0 失败；自检见 `tools/check-ground-sync.mjs`。
+8. **新增三条回放内数据（2026-10-23）**：ECS 销毁包 `0x26`（击毁/失效时刻）、
+   玩家槽位 `ptype=4` `0xF02D`（名字/氏族/队伍，配合 ECS `unit__playerId` 精确定位玩家）、
+   机场目录（离线生成 `terrain/airfields.json`，浏览器按地图/任务取跑道）。
+   自检：`tools/check-replay-extras.mjs`；6 份 TEST 回放玩家名 0 错误、机场 marker 全覆盖。
+
+9. **导弹弹道（2026-10-23）**：`ptype=4` WeaponSync `0xF0DB`/`0xF11A` 的 class 0 记录，
+   本局 3783 包 / 112 个导弹实体 / 5589 个位置，0 解析失败；6 份 TEST 回放对照上游 CSV
+   覆盖 96–100%。场景只画白色虚线（逐渐放出），弹体不画。
+   自检：`tools/check-replay-extras.mjs`（含导弹时序与覆盖率检查）。
+
 ## 5. 开发期踩到的两个坑（留给后来者）
 
 1. **`f32` 读写用了两块不同的 ArrayBuffer**：写进 `fb`、读 `dv`，于是 `getFloat32` 恒为 0.0。

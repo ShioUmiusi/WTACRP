@@ -107,6 +107,7 @@
 <!-- 自带 zstd 解码：Chromium 的 DecompressionStream 不支持 'zstd' -->
 <script src="vendor/fzstd.min.js"></script>
 <script src="wrpl-parse.js"></script>
+<script src="airfields.js"></script>
 <!-- 渲染：three.js 渲染器（ES module，由经典脚本桥 scene3d3-loader.js 动态加载，
      路径相对 loader 自身 → ../three3d/scene.js）。本局预计算的 terrain/*_landmask.js 与
      attitude-data.js **不引**（上传页要通用）：飘带坡度由 wrpl-parse.js 解析后挂到
@@ -219,13 +220,25 @@
     return up;
   }
 
+  function uniqBases(list) {
+    var out = [];
+    list.forEach(function (v) {
+      if (!v) { return; }
+      v = String(v);
+      if (out.indexOf(v) < 0) { out.push(v); }
+    });
+    return out;
+  }
+
   /* 静态资源基路径（可由服务器/CI 注入，默认用仓库里的 terrain/）。
-   * 直接指向地图侧产物目录即可，不必复制（在页面脚本之前赋值即可）：
-   *   window.ACE_TERRAIN_BASE = './warthunder-maps/dataset/contours/';
-   *   window.ACE_MASK_BASE    = './warthunder-maps/dataset/landmask/';
-   * 注意：注释里不能出现字面的 script 结束标签，否则会提前闭合本脚本（踩过）。 */
-  var TERRAIN_BASE = window.ACE_TERRAIN_BASE || "../terrain/";
-  var MASK_BASE = window.ACE_MASK_BASE || "../terrain/";
+   * 指向地图侧数据目录即可，不必复制（在页面脚本之前赋值）：
+   *   window.ACE_TERRAIN_BASE = '/path/to/dataset/contours/';
+   *   window.ACE_MASK_BASE    = '/path/to/dataset/landmask/';
+   * 注意：注释里不能出现字面的脚本结束标签，否则会提前闭合本脚本。 */
+  var TERRAIN_BASES = uniqBases([window.ACE_TERRAIN_BASE, "../terrain/"]);
+  var MASK_BASES = uniqBases([window.ACE_MASK_BASE, "../terrain/"]);
+  /* 机场目录（由 wrpl-acmi 数据整理的 67 图 / 256 任务跑道表；地形素材没带 airfields 时兜底） */
+  var AIRFIELDS_BASE = window.ACE_AIRFIELDS_BASE || "../terrain/";
 
   var _TABLES = null;
   function loadTablesIfAny(mission) {
@@ -289,11 +302,29 @@
 
     /* ① 等高线（可选） */
     var _terrainHit = { contours: false, mask: false };
-    var pCont = fetch(TERRAIN_BASE + map + '_contours.json')
-      .then(function (r) { return r.ok ? r.json() : null; })
+    function fetchFirstContours() {
+      var i = 0;
+      function next() {
+        if (i >= TERRAIN_BASES.length) { return Promise.resolve(null); }
+        var base = TERRAIN_BASES[i++];
+        return fetch(base + map + '_contours.json')
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; })
+          .then(function (j) {
+            if (j && j.meta && j.meta.crs === 'replay-world-meters' && norm(j.meta.map) === map) {
+              if (base !== TERRAIN_BASES[0]) {
+                console.log('[terrain] 使用候选素材路径：' + base);
+              }
+              return j;
+            }
+            return next();
+          });
+      }
+      return next();
+    }
+    var pCont = fetchFirstContours()
       .then(function (tj) {
-        if (!tj || !tj.meta || tj.meta.crs !== 'replay-world-meters') { return; }
-        if (norm(tj.meta.map) !== map) { return; }     /* 别的地图不许混进来 */
+        if (!tj) { return; }
         _terrainHit.contours = true;
         mission.terrain = { meta: tj.meta, contours: tj.contours || [],
                             water: tj.water || [], coastlines: tj.coastlines || [] };
@@ -369,17 +400,31 @@
       .catch(function () { /* 拿不到就留空，不编 */ });
 
     /* ② 陆地掩膜（可选；有它才有陆地填充色） */
-    var pMask = fetch(MASK_BASE + map + '_landmask.json')
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (j) {
-        if (j) { return j; }
-        /* 地图侧 dataset/landmask 的命名是 <map>.json，这里兼容一下 */
-        return fetch(MASK_BASE + map + '.json')
-          .then(function (r2) { return r2.ok ? r2.json() : null; })
-          .catch(function () { return null; });
-      })
+    function fetchFirstMask() {
+      var i = 0;
+      function next() {
+        if (i >= MASK_BASES.length) { return Promise.resolve(null); }
+        var base = MASK_BASES[i++];
+        return fetch(base + map + '_landmask.json')
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; })
+          .then(function (j) {
+            if (j) { return j; }
+            /* 地图侧 dataset/landmask 的命名是 <map>.json，这里兼容一下 */
+            return fetch(base + map + '.json')
+              .then(function (r2) { return r2.ok ? r2.json() : null; })
+              .catch(function () { return null; });
+          })
+          .then(function (lj) {
+            if (lj && lj.land && norm(lj.map) === map) { return lj; }
+            return next();
+          });
+      }
+      return next();
+    }
+    var pMask = fetchFirstMask()
       .then(function (lj) {
-        if (!lj || !lj.land || norm(lj.map) !== map) { return; }
+        if (!lj) { return; }
         _terrainHit.mask = true;
         window.ACE_LANDMASK = lj;
         if (mission.meta && mission.meta.limits) {
@@ -403,6 +448,41 @@
         console.warn('[terrain] 缺少素材：' + map + '（' + missT.join('、') + '）');
       }
     });
+  }
+
+  /* 机场目录：地形素材没带 airfields（或没加载地形素材）时，按地图 + 任务名从目录里取跑道。
+     回放自己解出的 markerNames 用来挑实际生成的 rank 变体；没有就取非条件项。 */
+  var _afCatalogPromise = null;
+  function loadAirfieldsCatalogueIfAny(mission) {
+    try {
+      if (!mission || !mission.meta) { return Promise.resolve(); }
+      if ((mission.runways || []).some(function (r) { return r.source === 'dataset-airfields'; })) {
+        return Promise.resolve();      /* 地图侧权威数据已就位，不覆盖 */
+      }
+      var pick = window.ACE_AIRFIELDS && window.ACE_AIRFIELDS.pick;
+      if (!pick) { return Promise.resolve(); }
+      if (!_afCatalogPromise) {
+        _afCatalogPromise = fetch(AIRFIELDS_BASE + 'airfields.json')
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .catch(function () { return null; });
+      }
+      return _afCatalogPromise.then(function (cat) {
+        if (!cat) { return; }
+        var hit = pick(cat, mission);
+        if (!hit || !hit.runways.length) { return; }
+        mission.runways = hit.runways;
+        mission.airfields = hit.airfields;
+        if (mission.meta.counts) {
+          mission.meta.counts.runways = hit.runways.length;
+          mission.meta.counts.airfields = hit.airfields.length;
+        }
+        if (mission.meta.limits) {
+          mission.meta.limits.push('机场：跑道来自机场目录（map=' + hit.map + '，mission=' +
+            hit.mission + '，选择方式=' + hit.how + '，' + hit.runways.length + ' 条）；' +
+            '坐标是上游 wrpl-acmi 目录的 world 系，和回放同框架。');
+        }
+      });
+    } catch (e) { return Promise.resolve(); }
   }
 
   function start(file) {
@@ -432,6 +512,7 @@
       WRPLParse.parse(buf, { fileName: file.name }).then(async function (mission) {
         var dt = ((performance.now() - t0) / 1000).toFixed(2);
         try { await loadTerrainIfAny(mission); } catch (e) { /* 地形拿不到不影响播放 */ }
+        try { await loadAirfieldsCatalogueIfAny(mission); } catch (e) { /* 目录拿不到不影响播放 */ }
         try { await loadTablesIfAny(mission); } catch (e2) { /* 表拿不到就用内嵌兜底 */ }
         if (!(window.ACEUI && typeof window.ACEUI.mount === 'function')) {
           fail('解析失败', '页面缺少 ACEUI.mount（mission.js 没加载成功），解析已完成但无法渲染。', '');

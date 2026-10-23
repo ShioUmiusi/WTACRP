@@ -1,4 +1,4 @@
-﻿/* =====================================================================
+/* =====================================================================
  * scene3d3.js —— 三维沙盘渲染器（three.js r186）
  * ---------------------------------------------------------------------
  * 与旧 scene3d.js 的关系：完全独立的实现，数据零改动（喂同一份 ACE_MISSION）。
@@ -30,7 +30,8 @@ const BANK_WIN = 6;
 const state = {
   ready: false, canvas: null, renderer: null, scene: null, camera: null, controls: null,
   meta: null, units: [], own: null, kills: [], runways: [], ground: [], shots: [],
-  camMode: 'follow', opts: { grid: true, trails: true, labels: true, map: true, kills: true, water: true },
+  camMode: 'follow', opts: { grid: true, trails: true, labels: true, map: true, kills: true, water: true,
+                              missiles: true, ownModel: true },
   labels: [], labelBox: null, t: 0, stats: { units: 0, calls: 0, fps: 0, tris: 0 }
 };
 
@@ -54,7 +55,8 @@ function injectLabelCss() {
     '.ac-label.own,.ac-label.squad{color:#5bff8a;font-weight:600}',
     '.ac-label.ally{color:#8fc2ff}',
     '.ac-label.enemy{color:#ff5a66}',
-    '.ac-label.unknown{color:#6b7c8b}'
+    '.ac-label.unknown{color:#6b7c8b}',
+    '.ac-label .ac-sub{display:block;font-size:10px;font-weight:400;opacity:.85;letter-spacing:.03em;margin-top:1px}'
   ].join('\n');
   document.head.appendChild(st);
 }
@@ -647,6 +649,57 @@ function buildRunways(scene, rw) {
   return lines;
 }
 
+/* 导弹弹道：白色虚线（弹体不画）。预先把每段航迹切成 dash/gap，
+ * 每个 dash 记录一个"出现时刻"，按时刻排序后用 drawRange 逐段放出。 */
+function buildMissileTrails(scene, missiles) {
+  if (!missiles || !missiles.length) { return null; }
+  const DASH = 180, GAP = 120;
+  const dashes = [];
+  for (const m of missiles) {
+    if (!m.n || m.n < 2) { continue; }
+    for (let i = 1; i < m.n; i++) {
+      const ax = m.x[i - 1], ay = m.y[i - 1], az = m.z[i - 1];
+      const bx = m.x[i], by = m.y[i], bz = m.z[i];
+      const t0 = m.t[i - 1], t1 = m.t[i];
+      const L = Math.hypot(bx - ax, by - ay, bz - az);
+      if (!(L > 1)) { continue; }
+      let s0 = 0;
+      while (s0 < L) {
+        const e0 = Math.min(L, s0 + DASH);
+        if (e0 - s0 < 6) { break; }
+        const f0 = s0 / L, f1 = e0 / L;
+        dashes.push({
+          t: t0 + (t1 - t0) * f0,
+          x1: ax + (bx - ax) * f0, y1: ay + (by - ay) * f0, z1: az + (bz - az) * f0,
+          x2: ax + (bx - ax) * f1, y2: ay + (by - ay) * f1, z2: az + (bz - az) * f1
+        });
+        s0 += DASH + GAP;
+      }
+    }
+  }
+  if (!dashes.length) { return null; }
+  dashes.sort((a, b) => a.t - b.t);
+  const pos = new Float32Array(dashes.length * 6);
+  const starts = new Float64Array(dashes.length);
+  for (let i = 0; i < dashes.length; i++) {
+    const d = dashes[i];
+    starts[i] = d.t;
+    pos[i * 6] = d.x1; pos[i * 6 + 1] = d.z1; pos[i * 6 + 2] = -d.y1;
+    pos[i * 6 + 3] = d.x2; pos[i * 6 + 4] = d.z2; pos[i * 6 + 5] = -d.y2;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setDrawRange(0, 0);
+  const mesh = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.62, depthWrite: false
+  }));
+  mesh.frustumCulled = false;
+  mesh.name = 'missiles';
+  mesh.renderOrder = 2;
+  scene.add(mesh);
+  return { mesh: mesh, geo: g, starts: starts };
+}
+
 /* ---------------------------------------------------------------- 标签 */
 function labelClass(u) {
   if (u.isOwn) { return 'own'; }
@@ -654,7 +707,7 @@ function labelClass(u) {
   return (u.side === 'enemy' || u.side === 'ally') ? u.side : 'unknown';
 }
 
-function buildLabels(container, units, own) {
+function buildLabels(container, units, own, ownModel) {
   const list = [];
   function mk(text, cls) {
     const d = document.createElement('div');
@@ -663,10 +716,32 @@ function buildLabels(container, units, own) {
     container.appendChild(d);
     return d;
   }
-  if (own) { list.push({ u: null, own: true, el: mk(own, 'own') }); }
+  if (own) {
+    const el = mk('', 'own');
+    const main = document.createElement('span');
+    main.textContent = own;
+    el.appendChild(main);
+    const sub = document.createElement('div');
+    sub.className = 'ac-sub';
+    sub.textContent = ownModel || '';
+    el.appendChild(sub);
+    list.push({ u: null, own: true, el: el, main: main, sub: sub });
+  }
   for (const u of units) {
     if (!u.label) { continue; }
-    list.push({ u: u, el: mk(u.label, labelClass(u)) });
+    if (u.isSquad) {
+      const el = mk('', labelClass(u));
+      const main = document.createElement('span');
+      main.textContent = u.label;
+      el.appendChild(main);
+      const sub = document.createElement('div');
+      sub.className = 'ac-sub';
+      sub.textContent = u.label;          /* 机型；没有呼号覆盖时不显示 */
+      el.appendChild(sub);
+      list.push({ u: u, el: el, main: main, sub: sub });
+    } else {
+      list.push({ u: u, el: mk(u.label, labelClass(u)) });
+    }
   }
   return list;
 }
@@ -722,7 +797,8 @@ function prepUnits(M) {
       label: (u.vehicleName || u.vehicle || u.entityId || '').toString().toUpperCase().slice(0, 22),
       att: (window.ACE_ATTITUDE && window.ACE_ATTITUDE.units && window.ACE_ATTITUDE.units['uid-' + u.uid]) || null,
       squadRank: squadRankOf(u.uid),
-      category: u.vehicleCategory || '', deathT: deathT, endT: t0 + (n - 1) / hz,
+      category: u.vehicleCategory || '', deathT: deathT,
+      endT: deathT != null ? Math.min(t0 + (n - 1) / hz, deathT) : t0 + (n - 1) / hz,
       isSquad: (u.uid != null && squadUids.has(String(u.uid)) && String(u.uid) !== ownUid) === true
     });
   }
@@ -828,6 +904,10 @@ function init(canvas, M, opts) {
       r.x1, r.y1, r.x2, r.y2, r.lengthM));
   })();
   state.airfields = state.runways;      /* 机场开关 → 跑道组 */
+  state.missiles = buildMissileTrails(scene, M.missiles || []);
+  if (state.missiles) {
+    console.log('[missile] 弹道 %d 条 / 虚线 %d 段', (M.missiles || []).length, state.missiles.starts.length);
+  }
 
   const airUnitsForDrops = p.units.filter(u => u.domain === 'air');
   state.drops = buildDrops(scene, airUnitsForDrops.length + 1);
@@ -855,7 +935,9 @@ function init(canvas, M, opts) {
   box.className = 'ac-labels';
   canvas.parentNode.appendChild(box);
   state.labelBox = box;
-  state.labels = buildLabels(box, airUnits.concat(groundUnits), p.own ? p.own.label : null);
+  const ownModel = (p.own && M.meta && M.meta.player)
+    ? (M.meta.player.vehicleName || (M.meta.player.vehicle ? String(M.meta.player.vehicle).toUpperCase().replace(/_/g, '-') : '')) : '';
+  state.labels = buildLabels(box, airUnits.concat(groundUnits), p.own ? p.own.label : null, ownModel);
 
   state.ready = true;
   window.__ACE_OPTS = state.opts;   /* 排查用：外部可直接改图层开关 */
@@ -1401,13 +1483,26 @@ function groundLabelText(u) {
   return u.label || '';
 }
 
+/* 地面单位取样：n=1 的静态点永远取 0；有同步位置的单位按 1 Hz 阶梯保持，
+ * 出生前返回 -1（不画）。不插值：回放采样中位 5.5 s，插值会造出假运动。 */
+function groundSampleIndex(u, t) {
+  if (!u.n || u.n < 2) { return 0; }
+  if (t < u.t0) { return -1; }
+  const i = Math.floor((t - u.t0) * (u.hz || 1));
+  if (i < 0) { return -1; }
+  return Math.min(u.n - 1, i);
+}
+
 /* 同类&相近（≤700 m）的地面单位聚成一个标签 */
 function buildGroundClusters(t) {
   const list = state.units.filter(u => u.domain === 'ground');
   const groups = [];
   const of = {};
   for (const u of list) {
-    const x0 = u.x[0], y0 = u.y[0], z0 = (u.z ? u.z[0] : 0);
+    const gi = groundSampleIndex(u, t);
+    if (gi < 0) { continue; }
+    if (u.deathT != null && t > u.deathT) { continue; }
+    const x0 = u.x[gi], y0 = u.y[gi], z0 = (u.z && u.z[gi] != null ? u.z[gi] : 0);
     if (!isFinite(x0) || !isFinite(y0)) { continue; }
     const txt = groundLabelText(u);
     let hit = null;
@@ -1468,6 +1563,8 @@ function render(st) {
     if (typeof st.options.showKills === 'boolean') { state.opts.kills = st.options.showKills; }
     if (typeof st.options.showDrops === 'boolean') { state.opts.drops = st.options.showDrops; }
     if (typeof st.options.showMarkers === 'boolean') { state.opts.markers = st.options.showMarkers; }
+    if (typeof st.options.showMissiles === 'boolean') { state.opts.missiles = st.options.showMissiles; }
+    if (typeof st.options.showOwnModel === 'boolean') { state.opts.ownModel = st.options.showOwnModel; }
   }
   sc.traverse(o => {
     if (o.name === 'grid') { o.visible = state.opts.grid; }
@@ -1517,13 +1614,28 @@ function render(st) {
     if (state.own && state.own.vis) { state.own.vis.im.visible = false; state.own.vis.geo.setDrawRange(0, 0); }
   }
 
+  /* 导弹弹道：只放已飞过的 dash */
+  if (state.missiles) {
+    const st2 = state.missiles;
+    let lo = 0, hi = st2.starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (st2.starts[mid] <= t) { lo = mid + 1; } else { hi = mid; }
+    }
+    st2.geo.setDrawRange(0, lo * 2);
+    st2.mesh.visible = state.opts.missiles !== false;
+  }
+
   /* 地面单位：方块（InstancedMesh） */
   const g = state.ground;
   if (g) {
     let n = 0;
     for (const u of state.units) {
       if (u.domain !== 'ground') { continue; }
-      const x = u.x[0], y = u.y[0], z = u.z[0] + 2;
+      const gi = groundSampleIndex(u, t);
+      if (gi < 0) { continue; }
+      if (u.deathT != null && t > u.deathT) { continue; }
+      const x = u.x[gi], y = u.y[gi], z = (u.z && u.z[gi] != null ? u.z[gi] : 0) + 2;
       const dist = state.camera.position.distanceTo(V3(x, y, z));
       const s = Math.max(30, dist * 0.005);
       _m.compose(V3(x, y, z), _q.set(0, 0, 0, 1), _s.set(s, s, s));
@@ -1550,14 +1662,21 @@ function render(st) {
   if (ident && state.opts.labels !== false) { buildGroundClusters(t); }
   if (ident && state.labels) {
     for (const L of state.labels) {
-      if (!L.u && L.own && ident.own) { L.el.textContent = ident.own; }
+      if (!L.u && L.own && ident.own) { if (L.main) { L.main.textContent = ident.own; } else { L.el.textContent = ident.own; } }
       else if (L.u && L.u.squadRank != null && ident.squad && ident.squad[L.u.squadRank - 1]) {
-        L.el.textContent = ident.squad[L.u.squadRank - 1];
+        if (L.main) { L.main.textContent = ident.squad[L.u.squadRank - 1]; }
+        else { L.el.textContent = ident.squad[L.u.squadRank - 1]; }
       }
     }
   }
   if (state.opts.labels) {
     for (const L of state.labels) {
+      if (L.sub) {
+        const mainText = L.main ? L.main.textContent : L.el.textContent;
+        const showSub = state.opts.ownModel !== false && L.sub.textContent &&
+                        mainText && mainText !== L.sub.textContent;
+        L.sub.style.display = showSub ? 'block' : 'none';
+      }
       let wx, wy, wz, el = L.el;
       if (L.own) {
         if (!state.own || !sampleAt(state.own, t, _v)) { el.style.display = 'none'; continue; }
@@ -1565,8 +1684,8 @@ function render(st) {
       } else if (L.u.domain === 'ground') {
         /* 地面：category 模式用类别；并在同位置聚合（由下面的 clusters 提供文本与位置） */
         const C = state._gClusterOf && state._gClusterOf[L.u.key];
-        if (C && C.rep !== L.u.key) { el.style.display = 'none'; continue; }
-        wx = C ? C.x : L.u.x[0];
+        if (!C || C.rep !== L.u.key) { el.style.display = 'none'; continue; }
+        wx = C.x;
         wy = C ? C.y : L.u.y[0];
         wz = (C ? C.z : (L.u.z ? L.u.z[0] : 0)) + PLATE_ALT;
         const txt = C ? C.text : groundLabelText(L.u);

@@ -48,7 +48,8 @@
   var NAMES = {};
   var SCENE = null, sceneBroken = false, sceneInitError = null;
   var camera = 'follow';
-  var options = { altScale: 1, showTrails: true, showLabels: true, showGrid: true };
+  var options = { altScale: 1, showTrails: true, showLabels: true, showGrid: true,
+                  showMissiles: true, showOwnModel: true };
   var met = 0, playing = false, speed = 1;
   var acc = 0, lastTs = 0, frames = 0, rafId = 0;
   var dragging = false;
@@ -542,7 +543,9 @@
         altScale: options.altScale,
         showTrails: options.showTrails,
         showLabels: options.showLabels,
-        showGrid: options.showGrid
+        showGrid: options.showGrid,
+        showMissiles: options.showMissiles,
+        showOwnModel: options.showOwnModel
       },
       // 附加：场景画击杀标记与扩散环时省得自己再扫事件表
       recentKills: recentKills(t),
@@ -692,6 +695,21 @@
     r1.appendChild(cv.ownInput);
     p.appendChild(r1);
 
+    /* 呼号下一行：本机机体型号（显示在 3D 呼号的第二行） */
+    var r1b = make('div', 'ace-panel-row ace-panel-modes');
+    r1b.appendChild(make('span', 'ace-panel-k', '呼号下型号'));
+    cv.ownModelBtn = make('button', 'ace-btn ace-mode', options.showOwnModel ? '显示' : '隐藏');
+    cv.ownModelBtn.type = 'button';
+    cv.ownModelBtn.addEventListener('click', function () {
+      cv.ownModelBtn.blur();
+      setOption('showOwnModel', !options.showOwnModel);
+      cv.ownModelBtn.textContent = options.showOwnModel ? '显示' : '隐藏';
+      cv.ownModelBtn.classList.toggle('on', options.showOwnModel);
+    });
+    cv.ownModelBtn.classList.toggle('on', options.showOwnModel);
+    r1b.appendChild(cv.ownModelBtn);
+    p.appendChild(r1b);
+
     var r2 = make('label', 'ace-panel-row ace-panel-col');
     r2.appendChild(make('span', 'ace-panel-k', '队友呼号（每行一个）'));
     cv.squadArea = make('textarea', 'ace-input ace-area');
@@ -731,6 +749,21 @@
       })(LABEL_MODES[li]);
     }
     p.appendChild(r4);
+
+    /* 导弹弹道：白色虚线（弹体不画） */
+    var r5 = make('div', 'ace-panel-row ace-panel-modes');
+    r5.appendChild(make('span', 'ace-panel-k', '导弹弹道'));
+    cv.missileBtn = make('button', 'ace-btn ace-mode', options.showMissiles ? '显示' : '隐藏');
+    cv.missileBtn.type = 'button';
+    cv.missileBtn.addEventListener('click', function () {
+      cv.missileBtn.blur();
+      setOption('showMissiles', !options.showMissiles);
+      cv.missileBtn.textContent = options.showMissiles ? '显示' : '隐藏';
+      cv.missileBtn.classList.toggle('on', options.showMissiles);
+    });
+    cv.missileBtn.classList.toggle('on', options.showMissiles);
+    r5.appendChild(cv.missileBtn);
+    p.appendChild(r5);
 
     /* 调试（临时）：只保留自由镜头 */
     p.appendChild(make('div', 'ace-panel-hd ace-panel-sub', '调试'));
@@ -1046,6 +1079,7 @@
     ['G', '网格开关'],
     ['H', '角落读数开关'],
     ['V', '地面单位标签：类别 / 具体型号'],
+    ['M', '导弹弹道开关'],
     ['R', '重播'],
     ['F', '全屏'],
     ['?', '本帮助']
@@ -1105,6 +1139,12 @@
       setOption('showGrid', !options.showGrid);
     } else if (k === 'v' || k === 'V') {
       setLabelMode(identity.labelMode === 'model' ? 'category' : 'model');
+    } else if (k === 'm' || k === 'M') {
+      setOption('showMissiles', !options.showMissiles);
+      if (cv.missileBtn) {
+        cv.missileBtn.textContent = options.showMissiles ? '显示' : '隐藏';
+        cv.missileBtn.classList.toggle('on', options.showMissiles);
+      }
     } else if (k === 'h' || k === 'H') {
       // 只隐藏读数块；齿轮按钮留在原位，否则设置入口跟着一起没了
       if (cv.wrap) {
@@ -1181,7 +1221,8 @@
       duration: DUR, t0: T0, met: met, playing: playing, speed: speed, camera: camera,
       options: {
         altScale: options.altScale, showTrails: options.showTrails,
-        showLabels: options.showLabels, showGrid: options.showGrid
+        showLabels: options.showLabels, showGrid: options.showGrid,
+        showMissiles: options.showMissiles, showOwnModel: options.showOwnModel
       },
       identity: {
         own: identity.own, squad: identity.squad.slice(), squadKeys: squadKeys.slice(),
@@ -1299,7 +1340,8 @@
     get options() {
       return {
         altScale: options.altScale, showTrails: options.showTrails,
-        showLabels: options.showLabels, showGrid: options.showGrid
+        showLabels: options.showLabels, showGrid: options.showGrid,
+        showMissiles: options.showMissiles, showOwnModel: options.showOwnModel
       };
     },
     get frames() { return frames; },

@@ -114,11 +114,27 @@ own: { t0, hz, n,
 ```js
 units: [ { key: "eny-ftr-07", side: "ally"|"enemy"|"squad"|"unknown",
            domain: "air"|"ground", vehicle: "f_15a"|null, player: null|"…",
-           hasAlt: bool, t0, hz, n, x: [], y: [], z: []|null, hdg: [] } ]
+           hasAlt: bool, t0, hz, n, x: [], y: [], z: []|null, hdg: [],
+           // 地面同步位置（ptype=4 MPI 0xF073/0xF074，可选）
+           static: bool, groundUid: number|null } ]
 ```
 
 - 全部来自回放。`Player` 不进 `units`。`hasAlt=false` 只用于回放里确实没有高度的实体。
+- 地面单位两种形态：`static:true` 是 ECS 构造点单采样；`static:false` 来自地面同步包，
+  `groundUid` 是回放里的地面 uid（绑不上 ECS 构造点时 `vehicle=null`、`vehicleName="GROUND UNIT"`、
+  `side="unknown"`，不许按距离猜型号/阵营）。`groundTeam` 是 ECS 的 team 组件（1=蓝/2=红），
+  `side` 由它和作者 team 比较得出；取不到 team 才回落到出生中心推断。地面航迹是 1 Hz 阶梯保持，不插值。
 - 侧别：回放给了就用；给不了用 `"unknown"`，**不要**用 8111 的颜色去补。
+
+### 2.3.1 导弹弹道 `missiles[]`（可选）
+
+```js
+missiles: [ { entity, t0, n, t: [], x: [], y: [], z: [] } ]
+```
+
+`t` 是轴秒（与 units 同轴），x/y/z 是回放世界米；来源是 WeaponSync 的 class 0 记录
+（`ptype=4` `0xF0DB` / `0xF11A`）。弹体不画，渲染层用白色虚线表示已飞过的部分；
+`options.showMissiles=false` 时整层不显示。
 
 ### 2.4 事件 `events[]`（按 `t` 升序，位置是击杀点）
 
@@ -195,7 +211,7 @@ state = {
   own: { x, y, z, ias, mach, hdg, roll, pitch, g, aoa, vy, ammo, fuel } | null,
   contacts: [ { key, side, domain, dx, dy, d } ],   // dx 向东、dy 向北，米
   ownMissing: bool,
-  options: { altScale, showTrails, showLabels, showGrid }
+  options: { altScale, showTrails, showLabels, showGrid, showMissiles, showOwnModel }
 }
 ```
 

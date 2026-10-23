@@ -670,3 +670,90 @@ ECS 解析的 `runways.json` 给出 `answer: "no_runway_geometry"`：回放里**
 **内部一致性 ≠ 外部证据。** uid_map 这次靠"机型唯一 → team"做到了 22/22 自洽，
 但自洽只说明它内部没矛盾；真正把它钉住的是外面三条不同来源的证据（8111 颜色、8111 可见性、结算玩家表）。
 反过来，`side_final` 的 2 色图内部也自洽，却在一条 TK 边上翻了色——**两条自洽路径冲突时，要去找第三条判据，而不是比谁的样本多。**
+
+## 17. 地面同步位置：`ptype=4` 消息 `0xF073` / `0xF074`（2026-10-23 增补）
+
+来源：上游 **wrpl-acmi dev 分支**（<https://github.com/3794432/wrpl-acmi>，
+`wrpl/packet/parser/movement/ground.go`、`ground_delta.go`）。此前本文件的结论是
+「`ptype=2` 是纯飞机通道、地面/弹药位置不可得」；**这条对 `ptype=2` 仍然成立**，
+但地面单位另有一条批量同步通道，不在 `ptype=2` 里。
+
+- 包：`ptype=4`，载荷签名 `02 58 73 F0`（客户端）/ `02 58 74 F0`（服务器）。
+  格式与位布局见 [REPLAY-FORMAT §5.2](REPLAY-FORMAT.md#52-00025873-地面同步包788-个可信度-a)。
+- 本局：**788 包 / 118 uid / 7275 个位置采样 / 0 解析失败**；采样间隔中位 5.5 s；
+  高度 13–246 m（真实地形高度）；水平速度 p90 4.5 m/s、max 9.4 m/s。
+- 实现：`ace-combat/web/wrpl-parse.js` 的 `parseGroundSync()`（自写 JS，按位重写；
+  与独立 Python 参考实现逐采样对比最大差 0.0013 m，比较脚本：`ace-combat/tools/check-ground-sync.mjs`）。
+- 与 ECS 的关系：118 个 uid 中 **38 个**首采样与 `ptype=6` 地面构造点的水平距离 ≤0.3 m，
+  这 38 个直接沿用 ECS 的型号/阵营/高度；其余 80 个只输出无身份 `GROUND UNIT`
+  （`vehicle=null`、`side=unknown`），不按距离猜型号或阵营——与上游 groundmeta 的口径一致。
+- 时间轴与坐标：`tick = ms × 256`，与航线通道同轴；位置是
+  `x = 世界 X`、`高度 = 世界 Y`、`z = 世界 Z`，与 `fm` 的 `(PosX, PosZ, PosY)` 同框架。
+- 仍未解的部分：地面单位的销毁时刻（`0x26` destruction → uid 的映射）没有接进播放器，
+  所以移动单位以最后一个采样结束，不推断击毁时间。
+
+### 17.1 地面阵营（真值，不再推断）
+
+ECS 构造块里有明确的 `team` 数据组件（`ecs:team`，int32，1=蓝 2=红）。浏览器版不解组件表，
+但用一个**实测稳定的锚点**就能读到它：块内型号串（`tankModels/…`、`structures/…`、
+`air_defence/…`）会出现两次，**第一次出现 − 60 = uid**、**最后一次出现 − 5 = team**。
+
+验证（6 份 TEST 回放，对照上游 `wrpl-acmi.exe -list` 的 ground 行）：
+
+| 回放 | 能对上 CSV 的地面单位 | team 一致 | side 一致 |
+|---|---|---|---|
+| TEST0 | 165 | 165 | 165 |
+| TEST1 | 87 | 87 | 87 |
+| TEST2 | 108 | 108 | 108 |
+| TEST3 | 81 | 81 | 81 |
+| TEST4 | 122 | 122 | 122 |
+| TEST5 | 152 | 152 | 152 |
+
+合计 **715/715，0 分歧**（side = team 是否等于作者 team）。查不到的（船、以及没有构造块的单位）
+保持 `side=unknown`，**不再**用「到两阵营出生中心的最近距离」硬分——斜线/不规则前线会把一半人分错。
+
+复跑：
+
+```bash
+node ace-combat/tools/check-ground-team.mjs "<replay.wrpl>" "<wrpl-acmi -list 的 csv>"
+```
+
+## 18. 击毁/失效、玩家槽位、机场目录（2026-10-23 增补）
+
+1. **击毁/失效时刻**：`ptype=6` 控制码 `0x26`：`control, count(+1), EID...`。本局 1608 个包、
+   1784 次销毁，EID 全部能对上构造记录；其中地面单位 2 个、空中 5 架拿到比击杀包更早的失效时刻。
+   播放器按这个时刻结束航迹（`deathTickRaw`/`deathKind='destroyed'`），不再让被销毁的单位飞完全程。
+2. **玩家槽位**：`ptype=4` `0xF02D`（见 REPLAY-FORMAT §5.3）。本局 32 名玩家，0 失败；
+   ECS 构造块里 `unit__playerId` 在**组件值起点 +119**（int32），用它索引槽位表，得到精确的
+   玩家名/氏族/队伍。6 份 TEST 回放对照上游 `-list` CSV：解析到的玩家名 **0 错误**
+   （TEST0/1/2/3/5 覆盖 31–32 人；TEST4 的构造块布局不同，只解出 12/42，剩余走旧的机型映射）。
+   小队成员 uid 因此不再靠击杀/死亡指纹猜，而是 `userId ↔ unit__playerId` 精确绑定。
+3. **机场目录**：上游 `airfields_all.json`（69 图 / 457 任务，AGPL-3.0）离线折成
+   `terrain/airfields.json`（67 图、1967 条跑道，383 KB）。浏览器在地形素材没带 `airfields`
+   时按「地图 + locName/battleType」选任务，再用回放实际生成的 marker 名（`t1_airfield_top` 等）
+   筛 rank 变体。6 份 TEST 回放：4 条跑道的局全部 marker 全覆盖；没有 marker 的局退化为
+   非条件项（TEST2：south_eastern_city_gs，2 条）。
+   回放自身反推的跑道是「以 marker 为中心 ±1500 m」，实测比目录偏 ~1.5 km；目录优先。
+4. 自检：`node tools/check-replay-extras.mjs "<replay.wrpl>" "<list.csv>"`。
+
+## 19. 导弹弹道（2026-10-23）
+
+`ptype=4` WeaponSync（`0xF0DB` / `0xF11A`）的 class 0 记录给出导弹真实同步位置，
+格式见 REPLAY-FORMAT §5.4。浏览器版实现 `parseWeaponSync()`（自写 JS，按位重写上游
+`projectiles/positions.go`），产出 `mission.missiles[]`（轴秒 + 世界米）。
+
+验证（6 份 TEST 回放，对照上游 `-list` CSV 的 missile 行）：
+
+| 回放 | 我们的弹道 | CSV | 覆盖 | 时序错误 |
+|---|---|---|---|---|
+| TEST0 | 110 | 112 | 98% | 0 |
+| TEST1 | 81 | 83 | 98% | 0 |
+| TEST2 | 12 | 12 | 100% | 0 |
+| TEST3 | 51 | 53 | 96% | 0 |
+| TEST4 | 97 | 98 | 99% | 0 |
+| TEST5 | 89 | 92 | 97% | 0 |
+
+（差的是只有 1 个采样、画不成线的实体。）渲染层不画弹体，只画白色虚线；
+`options.showMissiles` / 设置面板「导弹弹道」控制开关，键盘 M。
+
+自检：`node tools/check-replay-extras.mjs "<replay.wrpl>" "<list.csv>"`。
