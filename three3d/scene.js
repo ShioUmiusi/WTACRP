@@ -13,6 +13,7 @@
  * 对外接口与旧实现一致：window.ACEScene = { init, render, setCamera, setOption, getReady, getStats }
  * ===================================================================== */
 import * as THREE from 'three';
+import { ribbonWindow, missileVisibleStart, TRAIL_FADE_DEAD, MISSILE_FADE } from './trail-window.js';
 import { OrbitControls } from '../vendor/three/OrbitControls.js';
 
 const COL = {
@@ -654,9 +655,11 @@ function buildRunways(scene, rw) {
 function buildMissileTrails(scene, missiles) {
   if (!missiles || !missiles.length) { return null; }
   const DASH = 180, GAP = 120;
-  const dashes = [];
+  const groups = [];
+  let total = 0;
   for (const m of missiles) {
     if (!m.n || m.n < 2) { continue; }
+    const dashes = [];
     for (let i = 1; i < m.n; i++) {
       const ax = m.x[i - 1], ay = m.y[i - 1], az = m.z[i - 1];
       const bx = m.x[i], by = m.y[i], bz = m.z[i];
@@ -676,19 +679,17 @@ function buildMissileTrails(scene, missiles) {
         s0 += DASH + GAP;
       }
     }
+    if (!dashes.length) { continue; }
+    dashes.sort((a, b) => a.t - b.t);
+    groups.push({ firstT: m.t[0], endT: m.t[m.n - 1], dashes: dashes });
+    total += dashes.length;
   }
-  if (!dashes.length) { return null; }
-  dashes.sort((a, b) => a.t - b.t);
-  const pos = new Float32Array(dashes.length * 6);
-  const starts = new Float64Array(dashes.length);
-  for (let i = 0; i < dashes.length; i++) {
-    const d = dashes[i];
-    starts[i] = d.t;
-    pos[i * 6] = d.x1; pos[i * 6 + 1] = d.z1; pos[i * 6 + 2] = -d.y1;
-    pos[i * 6 + 3] = d.x2; pos[i * 6 + 4] = d.z2; pos[i * 6 + 5] = -d.y2;
-  }
+  if (!groups.length) { return null; }
+  const pos = new Float32Array(total * 6);
   const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const attr = new THREE.BufferAttribute(pos, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', attr);
   g.setDrawRange(0, 0);
   const mesh = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
     color: 0xffffff, transparent: true, opacity: 0.62, depthWrite: false
@@ -697,7 +698,7 @@ function buildMissileTrails(scene, missiles) {
   mesh.name = 'missiles';
   mesh.renderOrder = 2;
   scene.add(mesh);
-  return { mesh: mesh, geo: g, starts: starts };
+  return { mesh: mesh, geo: g, pos: pos, groups: groups, total: total };
 }
 
 /* ---------------------------------------------------------------- 标签 */
@@ -906,7 +907,7 @@ function init(canvas, M, opts) {
   state.airfields = state.runways;      /* 机场开关 → 跑道组 */
   state.missiles = buildMissileTrails(scene, M.missiles || []);
   if (state.missiles) {
-    console.log('[missile] 弹道 %d 条 / 虚线 %d 段', (M.missiles || []).length, state.missiles.starts.length);
+    console.log('[missile] 弹道 %d 条 / 虚线 %d 段', (M.missiles || []).length, state.missiles.total);
   }
 
   const airUnitsForDrops = p.units.filter(u => u.domain === 'air');
@@ -1183,14 +1184,17 @@ function sampleFull(u, t, out) {
 function updateRibbon(u, t, hwScale) {
   const vis = u.vis;
   if (!vis) { return; }
-  const win = u.isOwn ? TRAIL_WIN_OWN : TRAIL_WIN_AIR;
+  const dead = (u.deathT != null && t > u.deathT);
+  const post = dead ? (t - u.deathT) : 0;
+  if (dead && post >= TRAIL_FADE_DEAD) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
+  const win = ribbonWindow(u.isOwn ? TRAIL_WIN_OWN : TRAIL_WIN_AIR, dead ? post : 0);
   if (t < u.t0) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
 
   const cv = state.renderer.domElement;
   const cvH = Math.max(1, cv.clientHeight || cv.height || 800);
   const _p0 = { x: 0, y: 0, z: 0, hdg: 0, roll: 0 };
-  /* 已死亡：飘带**截止在击杀处并保留**（不画残骸螺旋，但历史航迹留痕） */
-  const tRibbon = (u.deathT != null && t > u.deathT) ? u.deathT : t;
+  /* 已死亡：飘带截止在击杀处，并在 TRAIL_FADE_DEAD 秒内从尾部缩短、淡出 */
+  const tRibbon = dead ? u.deathT : t;
   if (!sampleFull(u, tRibbon, _p0)) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
   /* 在地面上（刚重生/机场补给）：不画飘带，避免贴地堆叠出亮点 */
   if ((_p0.z || 0) < 25) { vis.geo.setDrawRange(0, 0); }
@@ -1257,7 +1261,8 @@ function updateRibbon(u, t, hwScale) {
     pos[kk + 4] = by - axis.y * HW;
     pos[kk + 5] = bz - axis.z * HW;
     /* 头部实色，尾部渐隐；带体本身仍不透明混色 */
-    const fade = Math.max(0.12, 1.0 - 0.88 * (k / Math.max(1, NMAX)));
+    const fade = Math.max(0.12, 1.0 - 0.88 * (k / Math.max(1, NMAX))) *
+      ribbonWindow(1, dead ? post : 0);
     col[cc] = cr_; col[cc + 1] = cg_; col[cc + 2] = cb_; col[cc + 3] = fade;
     col[cc + 4] = cr_; col[cc + 5] = cg_; col[cc + 6] = cb_; col[cc + 7] = fade;
     w++;
@@ -1614,16 +1619,35 @@ function render(st) {
     if (state.own && state.own.vis) { state.own.vis.im.visible = false; state.own.vis.geo.setDrawRange(0, 0); }
   }
 
-  /* 导弹弹道：只放已飞过的 dash */
+  /* 导弹弹道：只放已飞过的 dash；命中后 MISSILE_FADE 秒内从尾部缩短到消失 */
   if (state.missiles) {
     const st2 = state.missiles;
-    let lo = 0, hi = st2.starts.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (st2.starts[mid] <= t) { lo = mid + 1; } else { hi = mid; }
+    if (state.opts.missiles === false) {
+      st2.geo.setDrawRange(0, 0);
+      st2.mesh.visible = false;
+    } else {
+      const pos = st2.pos;
+      let w = 0;
+      for (const grp of st2.groups) {
+        const dt = t - grp.endT;
+        if (dt >= MISSILE_FADE) { continue; }
+        const dashes = grp.dashes;
+        /* 命中后按**段数**比例从尾部裁，避免 dash 疏密不均时突然大段消失 */
+        let start = 0;
+        start = missileVisibleStart(dashes.length, dt);
+        for (let i = start; i < dashes.length; i++) {
+          const d = dashes[i];
+          if (d.t > t) { break; }               /* 还没飞到 */
+          const o = w * 6;
+          pos[o] = d.x1; pos[o + 1] = d.z1; pos[o + 2] = -d.y1;
+          pos[o + 3] = d.x2; pos[o + 4] = d.z2; pos[o + 5] = -d.y2;
+          w++;
+        }
+      }
+      st2.geo.setDrawRange(0, w * 2);
+      st2.geo.attributes.position.needsUpdate = true;
+      st2.mesh.visible = w > 0;
     }
-    st2.geo.setDrawRange(0, lo * 2);
-    st2.mesh.visible = state.opts.missiles !== false;
   }
 
   /* 地面单位：方块（InstancedMesh） */

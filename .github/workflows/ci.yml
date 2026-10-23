@@ -23,9 +23,12 @@ jobs:
 
       - name: JavaScript syntax
         run: |
-          for f in mission.js scene3d3-loader.js three3d/scene.js web/wrpl-parse.js web/wrpl-worker.js; do
+          for f in mission.js scene3d3-loader.js three3d/scene.js three3d/trail-window.js web/wrpl-parse.js web/wrpl-worker.js web/airfields.js; do
             node --check "$f"
           done
+
+      - name: Trail window math
+        run: node tools/check-trail-window.mjs
 
       - name: Demo data parses
         run: |
