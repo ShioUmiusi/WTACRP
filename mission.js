@@ -25,7 +25,7 @@
   // 呼号是用户自填的，不来自回放数据（契约 §8.3）。设置存这里，刷新后保留。
   var LS_KEY = 'ace-combat.identity';
   var DEFAULT_OWN = 'ALPHA 01';
-  // 默认队友呼号条数 = 回放结算表里的**实际队友数**（meta.squad.members 去掉本机）；
+  // 默认队友呼号条数 = 回放小队数据（meta.squad，成员来自结算表 squadId）里的**实际队友数**；
   // 读不到小队信息时保守预填 1 个，用户可在齿轮里自行加。
   var CALLSIGN_MAX = 16;
 
@@ -253,7 +253,7 @@
     for (var i = 0; i < n; i++) out.push('ALPHA ' + pad2(i + 2));
     return out;
   }
-  // 真实队友 → 实体 key。只用回放结算表的 uid（entityId 是同一 id 的别名），
+  // 真实队友 → 实体 key。只用回放小队数据里的 uid（entityId 是同一 id 的别名），
   // uid 为 null / 对不上航迹的一律不绑（宁缺勿错），也不按航迹长度去猜。
   var SQUAD_MEMBER_KEYS = [];      // 每个真实队友的"主航迹" key（与呼号按索引对齐）
   var SQUAD_ALL_KEYS = [];         // 同一 uid 的**所有航迹段**：回放会在断档处把一条航迹切成多段，
@@ -285,13 +285,35 @@
       }
     }
   }
+  /* 阵营来源：按回放里实际存在的证据描述，而不是一句笼统的"推定" */
+  function sideSourceShort() {
+    var air = 0, airSide = 0, ground = 0, groundTeam = 0;
+    for (var i = 0; i < UNITS.length; i++) {
+      var u = UNITS[i];
+      if (u.domain === 'ground') {
+        ground++;
+        if (u.groundTeam === 1 || u.groundTeam === 2) groundTeam++;
+      } else if (u.domain === 'air') {
+        air++;
+        if (u.side === 'ally' || u.side === 'enemy') airSide++;
+      }
+    }
+    var parts = [];
+    if (air) parts.push('空中：' + (airSide ? '击杀关系 + 出生点' : '无证据'));
+    if (ground) parts.push('地面：' + (groundTeam === ground && ground > 0 ? 'ECS team' : '按出生中心推断'));
+    return parts.length ? parts.join(' · ') : '无单位';
+  }
+
   function squadSourceLine() {
     var mates = teammateSlots();
     if (squadMembers() === null) return '回放没给小队信息（meta.squad 缺失）：队友呼号按友军航迹长度补位，不是回放里的小队。';
-    if (mates === 0) return '回放结算表里本机没有其他队友：这些呼号按友军航迹长度补位。';
+    if (mates === 0) return '回放小队里本机没有其他成员：这些呼号按友军航迹长度补位。';
     var miss = mates - SQUAD_MEMBER_KEYS.length;
-    return '小队来自回放结算表 squadId：本局 ' + (mates + 1) + ' 人小队（本机 + ' + mates + ' 名队友）' +
-      (miss > 0 ? '；其中 ' + miss + ' 名的 uid 对不上航迹，不绑定' : '') + '。';
+    var sq = isObj(META.squad) ? META.squad : null;
+    var sid = (sq && sq.squadId !== undefined && sq.squadId !== null) ? '（squadId ' + sq.squadId + '）' : '';
+    return '小队来自回放结算表' + sid + '：本局 ' + (mates + 1) + ' 人小队（本机 + ' + mates + ' 名队友），' +
+      '队友 uid 按回放内击杀/死亡指纹绑定航迹' +
+      (miss > 0 ? '；其中 ' + miss + ' 名 uid 未在航迹中命中，不绑定' : '') + '。';
   }
 
   // ---------- 呼号（用户自填，不来自数据；契约 §8.3） ----------
@@ -727,10 +749,12 @@
     cv.bindNote = make('div', 'ace-panel-note ace-panel-bind');
     p.appendChild(cv.bindNote);
 
-    /* 阵营：只读，固定"推定" */
+    /* 阵营来源：只读；按回放里实际可用的证据描述（空中=击杀关系/出生点，地面=ECS team/出生中心） */
     var r3 = make('div', 'ace-panel-row');
-    r3.appendChild(make('span', 'ace-panel-k', '阵营显示'));
-    r3.appendChild(make('span', 'ace-panel-val', '推定'));
+    r3.appendChild(make('span', 'ace-panel-k', '阵营来源'));
+    var sideVal = make('span', 'ace-panel-val', sideSourceShort());
+    if (META.sideSource) sideVal.title = String(META.sideSource);
+    r3.appendChild(sideVal);
     cv.sideBtns = [];
     p.appendChild(r3);
 
@@ -828,7 +852,7 @@
     for (i = 0; i < squadKeys.length; i++) if (squadKeys[i]) bound++;
     var mates = teammateSlots();
     var msg = '已绑定 ' + bound + ' / ' + n + ' 个呼号';
-    if (mates) msg += ' · 回放小队 ' + mates + ' 名，uid 命中 ' + SQUAD_MEMBER_KEYS.length + ' 名';
+    if (mates) msg += ' · 回放小队 ' + mates + ' 名，uid 直接命中 ' + SQUAD_MEMBER_KEYS.length + ' 名';
     else if (n) msg += ' · 回放没给小队信息，这些呼号暂不绑定任何单位';
     if (bound < n) msg += '；未绑定的呼号不会画成队友';
     if (!storageOK) msg += ' · localStorage 不可用，本次设置刷新后不保留';
