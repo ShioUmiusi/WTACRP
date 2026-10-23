@@ -1184,18 +1184,30 @@ function sampleFull(u, t, out) {
 function updateRibbon(u, t, hwScale) {
   const vis = u.vis;
   if (!vis) { return; }
-  const dead = (u.deathT != null && t > u.deathT);
-  const post = dead ? (t - u.deathT) : 0;
-  if (dead && post >= TRAIL_FADE_DEAD) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
-  const win = ribbonWindow(u.isOwn ? TRAIL_WIN_OWN : TRAIL_WIN_AIR, dead ? post : 0);
+  /* 航迹结束（被击杀 / 回放里不再有采样）后：窗口逐步收缩并淡出，而不是整条消失。
+   * 注意：不少回放的 meta 里没有 secPerTick，deathT 为 null，所以以 endT 为准。 */
+  const endedT = (u.endT != null) ? u.endT : t;
+  const ended = t > endedT;
+  const post = ended ? (t - endedT) : 0;
+  if (ended && post >= TRAIL_FADE_DEAD) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
+  const win = ribbonWindow(u.isOwn ? TRAIL_WIN_OWN : TRAIL_WIN_AIR, ended ? post : 0);
   if (t < u.t0) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
 
   const cv = state.renderer.domElement;
   const cvH = Math.max(1, cv.clientHeight || cv.height || 800);
   const _p0 = { x: 0, y: 0, z: 0, hdg: 0, roll: 0 };
-  /* 已死亡：飘带截止在击杀处，并在 TRAIL_FADE_DEAD 秒内从尾部缩短、淡出 */
-  const tRibbon = dead ? u.deathT : t;
-  if (!sampleFull(u, tRibbon, _p0)) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
+  /* 已结束：飘带截止在最后一个有效时刻，并在 TRAIL_FADE_DEAD 秒内从尾部缩短、淡出 */
+  let tRibbon = ended ? endedT : t;
+  if (!sampleFull(u, tRibbon, _p0)) {
+    let recovered = false;
+    if (ended) {
+      /* 末段采样可能无效（坠毁/丢包）：往回找最近的有效时刻 */
+      for (let back = 0.2; back <= 1.2 + 1e-9; back += 0.2) {
+        if (sampleFull(u, endedT - back, _p0)) { tRibbon = endedT - back; recovered = true; break; }
+      }
+    }
+    if (!recovered) { vis.geo.setDrawRange(0, 0); vis.im.visible = false; return; }
+  }
   /* 在地面上（刚重生/机场补给）：不画飘带，避免贴地堆叠出亮点 */
   if ((_p0.z || 0) < 25) { vis.geo.setDrawRange(0, 0); }
   const distNow = state.camera.position.distanceTo(V3(_p0.x, _p0.y, _p0.z));
@@ -1262,7 +1274,7 @@ function updateRibbon(u, t, hwScale) {
     pos[kk + 5] = bz - axis.z * HW;
     /* 头部实色，尾部渐隐；带体本身仍不透明混色 */
     const fade = Math.max(0.12, 1.0 - 0.88 * (k / Math.max(1, NMAX))) *
-      ribbonWindow(1, dead ? post : 0);
+      ribbonWindow(1, ended ? post : 0);
     col[cc] = cr_; col[cc + 1] = cg_; col[cc + 2] = cb_; col[cc + 3] = fade;
     col[cc + 4] = cr_; col[cc + 5] = cg_; col[cc + 6] = cb_; col[cc + 7] = fade;
     w++;
@@ -1599,9 +1611,9 @@ function render(st) {
       updateRibbon(u, t, 1);
       /* 该时刻没有有效采样就不要画机体（否则会停在上一位置/原点） */
       if (u.vis) {
-        const hasU = sampleAt(u, t, _v);
-        u.vis.im.visible = !!hasU;
-        if (!hasU) { u.vis.geo.setDrawRange(0, 0); }
+        /* 只隐藏机体标记；飘带的结束/缩短由 updateRibbon 自己处理，
+         * 这里清 drawRange 会在 endT 一瞬间把整条飘带抹掉。 */
+        u.vis.im.visible = !!sampleAt(u, t, _v);
       }
     }
     if (state.own) {
@@ -1609,9 +1621,8 @@ function render(st) {
       /* 本机"还没出生"时采样是 null：必须把机体藏起来，
        * 否则它停在原点，看起来像"模型僵在地图正中心"（2026-10-22 TEST1 反馈）。 */
       if (state.own.vis) {
-        const hasOwn = sampleAt(state.own, t, _v);
-        state.own.vis.im.visible = !!hasOwn && state.opts.markers !== false;
-        if (!hasOwn) { state.own.vis.geo.setDrawRange(0, 0); }
+        state.own.vis.im.visible = !!sampleAt(state.own, t, _v) &&
+          state.opts.markers !== false;
       }
     }
   } else {
