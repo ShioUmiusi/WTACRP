@@ -169,6 +169,7 @@ unitsWithIdentity 236, unitsVehicleFromPackets 0, killsWithWeapon 30, killsWithW
    本局 3783 包 / 112 个导弹实体 / 5589 个位置，0 解析失败；6 份 TEST 回放对照上游 CSV
    覆盖 96–100%。场景只画白色虚线（逐渐放出），弹体不画。
    自检：`tools/check-replay-extras.mjs`（含导弹时序与覆盖率检查）。
+   记录尾部的 `3×u32` / `6×u16` / `seeker` 现在整段跳过，字段语义候选见 `REPLAY-FORMAT.md` §5.4.1。
 
 ## 5. 开发期踩到的两个坑（留给后来者）
 

@@ -69,6 +69,20 @@
 
   var AIR_TEMPLATES = ['aircraft+player_unit', 'aircraft'];
   var AIR_TEMPLATE_NAMES = { 'aircraft': 1, 'aircraft+player_unit': 1 };
+
+  /* 非飞机模板（坦克/工事/舰船）的 uid / 载具 / 玩家 / 队别：靠组件走查读，不再用飞机那套固定偏移。
+     走查器与名字表任一缺位就不启用，行为退回「只认飞机模板」。 */
+  var ECS_COMPS = null;
+  (function () {
+    var lib = null, names = null;
+    if (typeof globalThis !== 'undefined' && globalThis.ECSComps) lib = globalThis.ECSComps;
+    else if (typeof require === 'function') { try { lib = require('./ecs-comps.js'); } catch (e) { lib = null; } }
+    if (!lib) return;
+    if (typeof globalThis !== 'undefined' && globalThis.ECS_NAMES) names = globalThis.ECS_NAMES;
+    else if (typeof require === 'function') { try { names = require('./ecs-names.js'); } catch (e) { names = null; } }
+    if (!names) return;
+    try { lib.configure(names); ECS_COMPS = lib; } catch (e) { ECS_COMPS = null; }
+  })();
   var PROJECTILE_TEMPLATES = { 'rocket': 1, 'rocket+arh_shell': 1, 'bomb': 1,
                                'payload': 1, 'jettisoned': 1 };
   var SCENERY_TEMPLATES = { 'lamppost_c': 1, 'aircraft_warning_light_red': 1,
@@ -1200,10 +1214,22 @@
 
     var recsOrder = [], recs = {};
     ecs.creations.forEach(function (c) {
-      if (!AIR_TEMPLATE_NAMES[c.name]) return;
+      var isAir = !!AIR_TEMPLATE_NAMES[c.name];
+      var comps = null;
+      if (!isAir) {
+        /* 坦克/工事/舰船：飞机那套固定偏移不成立（块里组件集合随载具变），走组件走查。 */
+        if (!ECS_COMPS) return;
+        try { comps = ECS_COMPS.walk(c.block, ecs.compdefs, ecs.templates, c.vstart).comps; }
+        catch (e) { return; }
+      }
       var uidRaw = null;
-      if (c.vstart + UID_REL_OFFSET + 2 <= c.block.length) {
-        uidRaw = u16le(c.block, c.vstart + UID_REL_OFFSET);
+      if (isAir) {
+        if (c.vstart + UID_REL_OFFSET + 2 <= c.block.length) {
+          uidRaw = u16le(c.block, c.vstart + UID_REL_OFFSET);
+        }
+      } else {
+        var wu = ECS_COMPS.pick(comps, 'uid');
+        if (typeof wu === 'number' && wu >= 1 && wu <= 2046) uidRaw = wu;
       }
       var ascii = decodeAscii(c.block, 0, Math.min(c.block.length, 4096));
       var m = MISSION_RE.exec(ascii);
@@ -1211,25 +1237,40 @@
         uidRaw = (m[0] in missionUid) ? missionUid[m[0]] : null;
       }
       var team = m ? parseInt(m[1], 10) : null;
+      if (!isAir) {
+        var wt = ECS_COMPS.pick(comps, 'team');
+        if (typeof wt === 'number') team = wt;
+      }
       var slot = m ? m[0] : null;
       var cls = null;
-      var re = /[\x20-\x7e]{4,}/g, mm;
-      while ((mm = re.exec(ascii)) !== null) {
-        var s = mm[0];
-        if (s === 'dummy_plane' || s === c.name) continue;
-        if (s.indexOf('player') >= 0 || s.indexOf('aircraft') >= 0 || s.indexOf('+') >= 0) continue;
-        if (VEH_RE.test(s)) { cls = s; break; }
+      if (!isAir) {
+        var wc = ECS_COMPS.pick(comps, 'unit__className');
+        if (typeof wc === 'string' && wc) cls = wc;
+      }
+      if (!cls) {
+        var re = /[\x20-\x7e]{4,}/g, mm;
+        while ((mm = re.exec(ascii)) !== null) {
+          var s = mm[0];
+          if (s === 'dummy_plane' || s === c.name) continue;
+          if (s.indexOf('player') >= 0 || s.indexOf('aircraft') >= 0 || s.indexOf('+') >= 0) continue;
+          if (VEH_RE.test(s)) { cls = s; break; }
+        }
       }
       var key = String(uidRaw);
       if (!(key in recs)) { recs[key] = []; recsOrder.push(key); }
       var pid = null;
-      if (c.vstart + 119 + 4 <= c.block.length) {
-        pid = s32at(c.block, c.vstart + 119);
-        if (!(pid >= 0 && pid < 256)) pid = null;
+      if (isAir) {
+        if (c.vstart + 119 + 4 <= c.block.length) {
+          pid = s32at(c.block, c.vstart + 119);
+          if (!(pid >= 0 && pid < 256)) pid = null;
+        }
+      } else {
+        var wp = ECS_COMPS.pick(comps, 'unit__playerId');
+        if (typeof wp === 'number' && wp >= 0 && wp < 256) pid = wp;
       }
       recs[key].push({ eid: c.eid, tick: c.tick, team: team, slot: slot,
                        className: cls, blockSize: c.bs, valuesStart: c.vstart,
-                       playerId: pid });
+                       playerId: pid, fromWalk: !isAir });
     });
 
     var vehTeams = {};
@@ -1279,12 +1320,13 @@
       }
       var slotHit = null;
       if (slotPlayers) {
-        /* 同一 uid 可能有多个构造实例；只要任一实例带有效 unit__playerId 且能对上玩家表就采用 */
+        /* 同一 uid 可能有多个构造实例（且 uid 会跨时段复用）；优先取带 playerId 的那一例 */
         for (var li = 0; li < lst.length && !slotHit; li++) {
           var pid = lst[li].playerId;
           if (pid === null || pid === undefined) continue;
-          var sp = slotPlayers[pid];
-          if (sp && sp.name && (sp.team === 1 || sp.team === 2)) slotHit = sp;
+          var sp0 = slotPlayers[pid];
+          if (sp0 && sp0.name) { slotHit = sp0; break; }
+          if (pid === null || pid === undefined) continue;
         }
       }
       if (slotHit) {
@@ -1294,7 +1336,24 @@
         tcand = [pteam];
         cand = [player];
       }
+      var byDomain = { air: null, ground: null };
+      for (var di = 0; di < lst.length; di++) {
+        var rr = lst[di];
+        var dom = rr.fromWalk ? 'ground' : 'air';
+        if (!byDomain[dom]) byDomain[dom] = rr;
+      }
+      var spG = null;
+      if (slotPlayers && byDomain.ground && byDomain.ground.playerId !== null && byDomain.ground.playerId !== undefined) {
+        spG = slotPlayers[byDomain.ground.playerId] || null;
+      }
       out[String(uid)] = {
+        playerGround: spG ? spG.name : null,
+        teamGround: spG ? spG.team : null,
+        vehicleAir: byDomain.air ? byDomain.air.className : null,
+        vehicleGround: byDomain.ground ? byDomain.ground.className : null,
+        playerIdAir: byDomain.air ? byDomain.air.playerId : null,
+        playerIdGround: byDomain.ground ? byDomain.ground.playerId : null,
+        domains: (byDomain.air ? 'air' : '') + (byDomain.ground ? (byDomain.air ? ',ground' : 'ground') : ''),
         entityIndex: pick.eid & 0x3FFFFF, entityId: '0x' + pick.eid.toString(16),
         player: player, playerCandidates: cand, playerUserId: slotHit ? String(slotHit.playerId) : null,
         playerClan: slotHit ? (slotHit.clan || null) : null,
@@ -2344,7 +2403,7 @@
 
   /** 未绑定到 ECS 构造点的 uid：只要确实移动过（>50 m）就作为无身份地面单位输出，
    * 与上游 wrpl-acmi 的 "Ground unit <uid>" 同一口径——不按距离猜型号/阵营。 */
-  function buildAnonymousGroundTracks(groundSync, bind, axis, ysign) {
+  function buildAnonymousGroundTracks(groundSync, bind, axis, ysign, uidMap, display, authorTeam) {
     var boundUids = {};
     Object.keys(bind.bound).forEach(function (k) { boundUids[bind.bound[k].uid] = 1; });
     var out = [];
@@ -2359,11 +2418,25 @@
       if (moved < 50.0) return;                 // 原地不动的匿名点不新增，免得和静态点重复
       var tr = groundTrackArrays(s, axis, ysign, null, 1);
       out.push({
-        key: 'gnd-uid-' + uid, side: 'unknown', sideDecoded: null, sideInferred: false,
-        domain: 'ground', 'class': 'ground', vehicle: null,
-        vehicleSource: 'ground-sync(0xF073)', vehicleName: 'GROUND UNIT',
+        key: 'gnd-uid-' + uid, side: (function () {
+          /* uid 已连到玩家表时，队别就按玩家队别判，不必再靠出生点聚类 */
+          var e0 = uidMap ? uidMap[String(uid)] : null;
+          var t0 = e0 && e0.teamGround;
+          if (t0 === 1 || t0 === 2) return (authorTeam === 1 || authorTeam === 2) ? (t0 === authorTeam ? 'ally' : 'enemy') : 'unknown';
+          return 'unknown';
+        })(), sideDecoded: null, sideInferred: false,
+        domain: 'ground', 'class': 'ground',
+        vehicle: (function () { var e = uidMap ? uidMap[String(uid)] : null; return e && e.vehicleGround ? String(e.vehicleGround).replace(/^.*\//, '') : null; })(),
+        vehicleSource: 'ground-sync(0xF073)+ecs 组件走查',
+        vehicleName: (function () {
+          var e = uidMap ? uidMap[String(uid)] : null;
+          if (!e || !e.vehicleGround) return 'GROUND UNIT';
+          var base = String(e.vehicleGround).replace(/^.*\//, '');
+          return (display && display[base]) || base;
+        })(),
         vehicleCategory: '', hidden: false, template: null, unitClassName: null,
-        player: null, hasAlt: true, 'static': false, groundUid: parseInt(uid, 10),
+        player: (function () { var e = uidMap ? uidMap[String(uid)] : null; return e ? (e.playerGround || null) : null; })(),
+        playerUserId: null, hasAlt: true, 'static': false, groundUid: parseInt(uid, 10),
         t0: tr.t0, hz: 1, n: tr.n, x: tr.x, y: tr.y, z: tr.z, hdg: tr.hdg,
         deathTickRaw: null, deathKind: null, killerUid: null,
         entityId: null, gridClass: 'ground', spawnTickRaw: s[0][0]
@@ -2372,11 +2445,22 @@
     return out;
   }
 
-  function buildGroundUnits(ground, axis, display, centers, hiddenAll, bound, ysign, authorTeam) {
+  function buildGroundUnits(ground, axis, display, centers, hiddenAll, bound, ysign, authorTeam, uidMap) {
     var out = [];
     (ground || []).forEach(function (g, idx) {
       var x = finiteM(g.x), y = finiteM(g.y), z = finiteM(g.z);
       var b = bound ? bound[idx] : null;
+      /* 玩家身份：地面同步包给出 uid，组件走查把 uid 连到 unit__playerId → 玩家表。 */
+      var gUid = (b && b.uid != null) ? String(b.uid)
+        : ((typeof g.groundUid === 'number' && g.groundUid >= 0) ? String(g.groundUid) : null);
+      var um = (uidMap && gUid !== null && uidMap[gUid]) ? uidMap[gUid] : null;
+      /* uid 是 11 位、会被复用；地面单位只认“地面域”且真带 unit__playerId 的那一例，
+         否则会把同号飞机的玩家安到工事上（工事块本身没有 playerId）。 */
+      var umGName = um ? (um.playerGround || null) : null;
+      var umGVeh = um ? (um.vehicleGround || null) : null;
+      var umVeh = umGVeh ? String(umGVeh).replace(/^.*\//, '') : null;
+      /* 组件走查给的 unit__className 是资源路径（tankModels/… 、structures/…），显示只用末段。 */
+      var rcBase = rawClass ? String(rawClass).replace(/^.*\//, '') : null;
       if (!b && (x === null || y === null)) return;   /* 有同步位置的可以没有构造点坐标 */
       var tpl = g.template;
       var rawClass = g.unitClassName || g.className || null;
@@ -2397,11 +2481,15 @@
           side: sd, sideDecoded: teamSide, sideInferred: !teamSide && sd !== 'unknown',
           sideSource: sideSrc, groundTeam: team,
           domain: 'ground', 'class': 'ground',
-          vehicle: rawClass || tpl, vehicleSource: 'ecs+ground-sync(0xF073)',
-          vehicleName: hiddenHere ? '' : ((display[rawClass || String(tpl || '')] || rawClass || tpl)),
-          vehicleCategory: VEHICLE_CATEGORIES[rawClass || ''] || 'UNKNOWN',
+          vehicle: rcBase || umVeh || tpl,
+          vehicleSource: umVeh ? 'ecs 组件走查(unit__className)' : 'ecs+ground-sync(0xF073)',
+          vehicleName: hiddenHere ? '' : ((display[rcBase || String(tpl || '')] || rcBase || umVeh || tpl)),
+          vehicleCategory: VEHICLE_CATEGORIES[rcBase || ''] || 'UNKNOWN',
           hidden: hiddenHere, template: tpl, unitClassName: rawClass,
-          player: null, hasAlt: z !== null, 'static': false,
+          player: umGName,
+          playerUserId: um ? um.playerUserId : null,
+          playerCandidates: um ? um.playerCandidates : [],
+          hasAlt: z !== null, 'static': false,
           groundUid: parseInt(b.uid, 10),
           t0: tr.t0, hz: 1, n: tr.n,
           x: tr.x, y: tr.y, z: tr.z, hdg: tr.hdg,
@@ -2416,11 +2504,15 @@
         side: sd, sideDecoded: teamSide, sideInferred: !teamSide && sd !== 'unknown',
         sideSource: sideSrc, groundTeam: team,
         domain: 'ground', 'class': 'ground',
-        vehicle: rawClass || tpl, vehicleSource: 'ground.json',
-        vehicleName: hiddenHere ? '' : ((display[rawClass || String(tpl || '')] || rawClass || tpl)),
-        vehicleCategory: VEHICLE_CATEGORIES[rawClass || ''] || 'UNKNOWN',
+        vehicle: rcBase || umVeh || tpl,
+        vehicleSource: umVeh ? 'ecs 组件走查(unit__className)' : 'ground.json',
+        vehicleName: hiddenHere ? '' : ((display[rcBase || String(tpl || '')] || rcBase || umVeh || tpl)),
+        vehicleCategory: VEHICLE_CATEGORIES[rcBase || ''] || 'UNKNOWN',
         hidden: hiddenHere, template: tpl, unitClassName: rawClass,
-        player: null, hasAlt: true, 'static': true,
+        player: umGName,
+        playerUserId: um ? um.playerUserId : null,
+        playerCandidates: um ? um.playerCandidates : [],
+        hasAlt: true, 'static': true,
         groundUid: g.groundUid === undefined ? null : g.groundUid,
         t0: tick !== null && tick !== undefined ? Math.max(0.0, rnd(axis.sec(tick), 3)) : 0.0,
         hz: 1, n: 1,
@@ -3602,8 +3694,8 @@
     // ---- 地面单位（阵营优先用 ECS 的 team 组件，取不到才回落到出生中心推断）
     var authorTeam = authorRow ? authorRow.team : null;
     var groundUnits = buildGroundUnits(groundRows, axis, displayNames, sideFin.centers, hiddenAll,
-                                       groundBind.bound, ysign, authorTeam);
-    var groundAnon = buildAnonymousGroundTracks(groundSync, groundBind, axis, ysign);
+                                       groundBind.bound, ysign, authorTeam, uidMap);
+    var groundAnon = buildAnonymousGroundTracks(groundSync, groundBind, axis, ysign, uidMap, displayNames, authorTeam);
     units = units.concat(groundUnits, groundAnon);
     units.sort(function (a, b) {
       var da = a.domain === 'air' ? 0 : 1, db = b.domain === 'air' ? 0 : 1;

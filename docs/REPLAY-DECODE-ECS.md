@@ -889,3 +889,36 @@ python tools/wrpl_decode_ecs.py --build     # tracks_ecs.json
 | 弹药的逐帧航迹 | 仍未解且结构性不可得（弹药模板没有 `uid` 组件，关联不到 ptype=2） |
 | `0002588e` 的实体 id | 未解（结构确定，无 id 字段） |
 | ECS 坐标系与 8111 世界坐标的刚体变换 | 未闭合 |
+
+## 6. 构造块组件走查（2026-11-16 新增，`web/ecs-comps.js`）
+
+**为什么要有它**：旧解析器只认飞机模板，读 `unit__playerId` 用「值起点 + 119」这个固定偏移。坦克/工事/舰船的构造块里组件集合随载具变（模板 109 个组件、块中位 1639 字节），固定偏移一律失效，地面单位因此拿不到玩家身份。
+
+**格式**（移植自 `.ref/wrpl-acmi-dev/wrpl/packet/parser/ecs2/`，`ecs2.go:198-265`）
+
+```
+构造块 = [模板头][组件条数][逐条目: 增量下标 1 字节 + 按类型解析的值]
+模板头 = tid(compressed) + 名字长度前缀串 + u16 组件数 + 逐组件 compressed id
+         （新组件再跟两个 u32：数据组件哈希、组件类型哈希）
+增量下标 = 首条目直接是下标；其后为 idx += ofs + 1
+```
+
+**已登记模板的块**只给 `tid`，名字与组件表不重发；此时 `tid` 后跟一个 `0x00`（名字长度占位），条数按 compressed 变长读。
+
+**两个坑**
+
+1. `dm::PartIdList` 的元素个数是 `rawCount × 8`（上游 `allocation_limits.go:45-54` 的 `ecsCheckPartIDListCount`），每个元素 6 位。按 `rawCount` 读会少 7/8 的数据，后面整块错位——这正是坦克块最初「组件下标越界」的原因。
+2. `StorageParser`（各 `*ModelStorageComponent`）上游自己也是 TODO，只读 `compressed` 长度再跳过该位数；本移植同义，长度对就等价。
+
+**验收（有控制臂，2026-11-16 实测）**
+
+| 模板 | 走通 | `unit__playerId` | 结论 |
+|---|---|---|---|
+| `aircraft+player_unit`（控制臂） | 50/50 | 与固定偏移 `+119` **32 块逐块相同、0 分歧** | 字段顺序与位宽表正确 |
+| `tank+player_unit`（目标） | 85/85 | 85/85 命中，去重 32，全部落在 `sync_player` 的 32 个玩家位里 | 地面身份可解 |
+
+**接进解析器后**：`buildUidMap` 的 uids 表里，同一 uid 现在带 `domains`（`air` / `ground`）和 `playerGround` / `vehicleGround`。因为 `uid` 只有 11 位、会跨时段复用，同号的飞机与地面必须分域取值。地面单位（含 `0xF073` 同步出来的匿名地面点）按 `groundUid` 查表绑定玩家。陆战回放 `guadalcanal_Dom` 实测：106 条地面航迹里 56 条拿到玩家名与真实载具名（用 `playerGround` 严格取值；早前按 `um.player` 兜底的版本会多算 20 条，属同号 uid 误绑）。
+
+**显示契约（2026-11-16）**：`three3d/scene.js` 的标签按“段”取机型——同一玩家换机后（坦克→飞机）两条航迹各显示当段载具；有玩家名的航迹第二行显示玩家名，所以两段看得出是同一个人。本机标签的副行按当前播放时刻落在哪一段切换机型（`ownSegs`）。地面标签在 `model` 模式追加 `· 玩家名`。
+
+**名字表**：`web/ecs-names.js` 由 `scratch/make_ecs_names.mjs` 生成（`components` 全量 190 条；`dataComponents` 只内联 4 份回放实际出现的 291 条，未收录的按「组件类型是定长 POD 就按宽度跳过」处理，与上游 `AllowMissingPODDataComponents` 同义），32 KB，随页面静态加载，不发网络请求。

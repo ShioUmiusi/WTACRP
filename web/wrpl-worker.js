@@ -14,7 +14,7 @@
  * ===================================================================== */
 'use strict';
 
-importScripts('vendor/fzstd.min.js', 'wrpl-parse.js');
+importScripts('vendor/fzstd.min.js', 'ecs-comps.js', 'ecs-names.js', 'wrpl-parse.js');
 
 var peakHeap = 0;
 function heapNow() {
