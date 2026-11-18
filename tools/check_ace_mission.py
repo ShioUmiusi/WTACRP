@@ -3110,6 +3110,31 @@ def check_terrain(cfg, md, results):
                             % (bad_nested, bad_w, bad_c))
         if outb:
             problems.append("有 %d 个等高线点越出 terrain.meta.bounds" % outb)
+        # 战斗区细节层（contoursDetail）：点必须在 meta.detail.bounds 内、间隔比粗层细
+        cd = tr.get("contoursDetail") or []
+        det = tm.get("detail") or {}
+        if cd:
+            db = det.get("bounds") or {}
+            ev.append("细节层：%d 层（interval %s m）/ bounds %s"
+                      % (len(cd), det.get("contourIntervalM"),
+                         json.dumps(db, ensure_ascii=False)))
+            if not db:
+                problems.append("contoursDetail 存在但 meta.detail.bounds 缺失")
+            else:
+                o = 0
+                for c in cd:
+                    for line in (c.get("lines") if isinstance(c, dict) else []) or []:
+                        arr = np.asarray(line, dtype=float)
+                        if arr.size < 2 or not np.all(np.isfinite(arr)):
+                            continue
+                        xs, ys = arr[0::2], arr[1::2]
+                        o += int(((xs < db["minX"] - 1) | (xs > db["maxX"] + 1)
+                                  | (ys < db["minY"] - 1) | (ys > db["maxY"] + 1)).sum())
+                if o:
+                    problems.append("细节层有 %d 个点越出 meta.detail.bounds" % o)
+            di, ci = det.get("contourIntervalM"), tm.get("contourIntervalM")
+            if isinstance(di, (int, float)) and isinstance(ci, (int, float)) and not di < ci:
+                problems.append("细节层间隔 %s 没有比粗层 %s 更细" % (di, ci))
         # 交付文本自相矛盾：terrain 非空但 limits 还写着 null
         stale = [x for x in limits if "terrain" in x.lower() and "null" in x]
         ev.append("limits 里仍写着 terrain=null 的旧句：%d 条" % len(stale))

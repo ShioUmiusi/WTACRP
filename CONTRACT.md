@@ -394,6 +394,10 @@ state.identity = {
 - 跑道 / 重生点要读 `airfields` **加** `airfieldsOutsideBaseMap`（重生点同理）；陆战图前一份为空，
   只读它会得到“有图无机场”。
 - 本局地图 `air_skyscraper_city.bin` 是老格式关卡（地形只在 `lmap` 网格里），由 LandMesh 重建。
+- **战斗区细层 `contoursDetail`**（2026-11-18 起，陆战图 83 张）：同一格式的可选数组，范围见 `meta.detail.bounds`，
+  采样间隔 `meta.detail.cellSizeM`（HM2 原生，0.25–4 m/px）。粗层已经在这块矩形内被挖空，
+  所以渲染侧只需把两层拼起来画（`contours.concat(contoursDetail)`），**不要在客户端再裁剪或去重**。
+  数据侧接入同理：页面只读 `contours` 会丢掉战斗区细节，看着像“打回原形”。
 
 ## 10. 范围纪律（v8）
 

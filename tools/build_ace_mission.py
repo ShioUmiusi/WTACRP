@@ -423,12 +423,16 @@ def build_terrain(terrain_json, level):
         return None, "坐标系不是 replay-world-meters（%r），不并入" % crs
     if declared and level and str(declared) not in str(level):
         return None, "文件声明的地图 %r 与本局 %r 不一致，不并入" % (declared, level)
+    det = terrain_json.get("contoursDetail") or []
+    n_coarse = len(terrain_json.get("contours") or [])
     return {
         "meta": terrain_json.get("meta"),
         "contours": terrain_json.get("contours") or [],
+        "contoursDetail": det,
         "water": terrain_json.get("water") or [],
         "coastlines": terrain_json.get("coastlines") or [],
-    }, "已并入（%d 条等高线）" % len(terrain_json.get("contours") or [])
+    }, ("已并入（%d 条等高线%s）" % (n_coarse,
+                                     "，战斗区另有 %d 条细等高线" % len(det) if det else ""))
 
 
 def ascii_runway_name(key, name):

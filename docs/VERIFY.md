@@ -388,3 +388,24 @@ python tools/check_ace_mission.py --selftest   # 36/36
 - 顺带量到的正常行为（不是回归）：`setCamera('follow')` 会把 `CAMS.init` 置 false 从而**直接贴合**标准追尾机位
   （实测 `f=[1583,1007.3,-1307]、el=0.55、r=7000`），free→follow 回到的正是这一机位。
 - 本改动只动了相机分支顺序与 `setCamera`；`check_ace_mission.py --selftest` 不打渲染层，未重跑。
+
+---
+
+## 变更记录 · 2026-11-18 · 战斗区细层（`contoursDetail`）接入
+
+- 数据侧：`warthunder-maps` 的 83 张陆战图现在同时给两层 —— `contours`（整关 lmap，64 m/px）
+  与 `contoursDetail`（只盖战斗区，HM2 原生 0.25–4 m/px，范围 `meta.detail.bounds`）。粗层在战斗区内被置 NaN 挖空。
+- 消费侧改动（3 处）：
+  - `three3d/scene.js:buildTerrain` 把两层拼起来画（`contours.concat(contoursDetail)`），新增中文注释说明不重叠加；
+  - `web/index.html` 的地形加载器把 `tj.contoursDetail` 带进 `mission.terrain`，并在 `limits` 里写一句细层说明；
+  - `tools/build_ace_mission.py`（打包）与 `tools/check_ace_mission.py`（校验）分别透传与断言细层：
+    点必须落在 `meta.detail.bounds` 内、`cellSizeM` 必须比粗层细。
+- 浏览器实测（`avg_soviet_range`，`http://127.0.0.1:8123/` 拖入回放，1280×800）：
+  `terrain.contours` 19 层 / 82 926 段、`terrain.contoursDetail` 22 层 / 19 621 段，
+  `meta.detail = {cellSizeM:2, contourIntervalM:1, bounds:0..4096}`，`__ACE_ERRORS` / pageerror 空；
+  `limits` 出现「战斗区另有 22 层细等高线（HM2 原生分辨率 2 m/px）」。
+  自由镜头下把镜头推进战斗区，可见工事/地面单位周围等高线明显变密（截图 `scratch/hybrid-zoom2.png`）。
+- 数据侧自证（不在本仓）：粗层落在战斗区内的顶点 0 个、细层落在区外 0 个；
+  顶点重采样回自己的高度图中位 0.01 m（粗）/ 0.00 m（细）；区内线密度 14.43 km/km² vs 区外 3.32（4.3 倍）。
+  详见 `warthunder-maps/docs/METHOD-VALIDATION.md` §8。
+- 未做：`?local=1` 纯前端路径没有地形层，因此这条改动只影响连服务器的工具页；本局 `air_skyscraper_city` 本身就是老格式关卡（无细层）。

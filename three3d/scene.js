@@ -84,7 +84,9 @@ function buildTerrain(scene, M) {
    * 而原来这里全压成 y=0，所以看上去"单位不在 0、线在 0"（2026-10-22 用户指出）。
    * 底色平面保持在 0，不影响；海岸线是海平面，仍留 0。 */
   const TERRAIN_EXAG = 1.0;
-  (tr.contours || []).forEach((c) => {
+  /* contoursDetail = 战斗区细节层（HM2 原生分辨率的等高线，范围见 meta.detail.bounds）。
+   * 两层不重叠：粗层在战斗区被挖空，所以这里直接拼起来画，无需裁剪。 */
+  (tr.contours || []).concat(tr.contoursDetail || []).forEach((c) => {
     const y = (typeof c.elev === 'number' ? c.elev : 0) * TERRAIN_EXAG;
     for (const line of (c.lines || [])) {
       const p = line.pts || line;

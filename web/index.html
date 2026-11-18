@@ -328,7 +328,10 @@
       .then(function (tj) {
         if (!tj) { return; }
         _terrainHit.contours = true;
+        /* contoursDetail：战斗区细层（HM2 原生分辨率），范围见 meta.detail.bounds。
+         * 粗层在战斗区内已挖空，所以两层直接拼接绘制，不重叠。 */
         mission.terrain = { meta: tj.meta, contours: tj.contours || [],
+                            contoursDetail: tj.contoursDetail || [],
                             water: tj.water || [], coastlines: tj.coastlines || [] };
         if (mission.meta && mission.meta.counts) {
           mission.meta.counts.terrainContours = mission.terrain.contours.length;
@@ -338,7 +341,12 @@
         if (mission.meta && mission.meta.limits) {
           mission.meta.limits.push('地形：等高线来自服务器静态素材（' + map +
             '，source=' + (tj.meta.source || '?') + '，bounds=' +
-            JSON.stringify(tj.meta.bounds || {}) + '），按地图名校验一致后加载。');
+            JSON.stringify(tj.meta.bounds || {}) + '），按地图名校验一致后加载。' +
+            (mission.terrain.contoursDetail.length
+              ? '战斗区另有 ' + mission.terrain.contoursDetail.length +
+                ' 层细等高线（HM2 原生分辨率 ' +
+                ((tj.meta.detail && tj.meta.detail.cellSizeM) || '?') + ' m/px）。'
+              : ''));
         }
 
         /* 权威机场数据（地图侧 dataset/contours 顶部新增的两块）：
