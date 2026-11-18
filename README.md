@@ -109,7 +109,7 @@ Turn a War Thunder `.wrpl` replay into a minimal Ace Combat-style 3D scene: 3D t
 
 - `index.html` — demo with one pre-generated match; `web/index.html` — drop in any `.wrpl`.
 - Rendering: three.js r186; parsing: `web/wrpl-parse.js` plus fzstd.
-- Terrain comes from the [WT-MAP-ANALYZE](https://github.com/ShioUmiusi/WT-MAP-ANALYZE) dataset (`data-2026.10` tag) and is packed at build time by `tools/pack_terrain.py`; a sample map is included for local use.
+- Terrain comes from the [WT-MAP-ANALYZE](https://github.com/ShioUmiusi/WT-MAP-ANALYZE) dataset (`data-2026.11` tag) and is packed at build time by `tools/pack_terrain.py`; a sample map is included for local use.
 - Python tools decode the replay container, tracks, kill events and ECS data into `mission-data.js`; see `docs/` for the format and the exact commands.
 - Known issue: the replay stream does not expose a faction field yet, so ground units are assigned a side by position and can be misclassified; aircraft and the online player table still come from the match results.
 - The bundled demo data is anonymized (player names, account ids and clan tags are synthetic). No original game assets are redistributed; War Thunder is property of Gaijin Entertainment and this project is not affiliated with Gaijin.
