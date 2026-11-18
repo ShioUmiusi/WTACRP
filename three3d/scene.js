@@ -189,10 +189,17 @@ function buildBounds(scene, bounds) {
   return true;
 }
 
-/* 地图范围：优先用地形自报的 bounds；**没有地形时按本局数据推算** ——
- * 每局的地图与外框大小都不一样，绝不能落回某一张图的固定范围（例如 ±32768）。 */
+/* 地图范围：优先用整关范围（meta.levelBounds，来自关卡 lmap 网格）；再退到地形自报的
+ * meta.bounds；**都没有时按本局数据推算** —— 每局的地图与外框大小都不一样，不能落回某张图的固定范围。
+ * 陆战图（avg_/avn_/hvg_）的 HM2 地形只覆盖 ~2–4 km 战斗区，而机场/空出点铺满整关，
+ * 用 meta.bounds 画框会把框画在战斗区、把机场留在框外——用户 2026-11-18 报的就是这个。 */
 function resolveBounds(M) {
-  const tb = M && M.terrain && M.terrain.meta && M.terrain.meta.bounds;
+  const meta = M && M.terrain && M.terrain.meta;
+  const lb = meta && meta.levelBounds;
+  if (lb && isFinite(lb.minX) && isFinite(lb.maxX) && isFinite(lb.minY) && isFinite(lb.maxY)) {
+    return { minX: lb.minX, maxX: lb.maxX, minY: lb.minY, maxY: lb.maxY };
+  }
+  const tb = meta && meta.bounds;
   if (tb && isFinite(tb.minX) && isFinite(tb.maxX)) { return tb; }
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   const add = (x, y) => {
@@ -708,7 +715,7 @@ function labelClass(u) {
   return (u.side === 'enemy' || u.side === 'ally') ? u.side : 'unknown';
 }
 
-function buildLabels(container, units, own, ownModel) {
+function buildLabels(container, units, own, ownModel, ownSegs) {
   const list = [];
   function mk(text, cls) {
     const d = document.createElement('div');
@@ -726,18 +733,20 @@ function buildLabels(container, units, own, ownModel) {
     sub.className = 'ac-sub';
     sub.textContent = ownModel || '';
     el.appendChild(sub);
-    list.push({ u: null, own: true, el: el, main: main, sub: sub });
+    list.push({ u: null, own: true, el: el, main: main, sub: sub, ownSegs: ownSegs || [] });
   }
   for (const u of units) {
     if (!u.label) { continue; }
-    if (u.isSquad) {
+    if (u.isSquad || (u.player && multiPlayers.has(String(u.player)))) {
       const el = mk('', labelClass(u));
       const main = document.createElement('span');
       main.textContent = u.label;
       el.appendChild(main);
       const sub = document.createElement('div');
       sub.className = 'ac-sub';
-      sub.textContent = u.label;          /* 机型；没有呼号覆盖时不显示 */
+      /* 小队：第一行呼号、第二行机型；有玩家名但不是小队：第一行机型、第二行玩家名。
+         换机（同一玩家坦克→飞机）时两段航迹的机型不同、玩家名相同，一眼看得出是同一个人。 */
+      sub.textContent = u.isSquad ? u.label : u.player;
       el.appendChild(sub);
       list.push({ u: u, el: el, main: main, sub: sub });
     } else {
@@ -796,6 +805,7 @@ function prepUnits(M) {
       isOwn: false, key: u.key, uid: u.uid, domain: dom, side: u.side || 'unknown',
       n: n, hz: hz, t0: t0, x: u.x, y: u.y, z: u.z, hdg: u.hdg, roll: null,
       label: (u.vehicleName || u.vehicle || u.entityId || '').toString().toUpperCase().slice(0, 22),
+      player: u.player || null,
       att: (window.ACE_ATTITUDE && window.ACE_ATTITUDE.units && window.ACE_ATTITUDE.units['uid-' + u.uid]) || null,
       squadRank: squadRankOf(u.uid),
       category: u.vehicleCategory || '', deathT: deathT,
@@ -938,7 +948,30 @@ function init(canvas, M, opts) {
   state.labelBox = box;
   const ownModel = (p.own && M.meta && M.meta.player)
     ? (M.meta.player.vehicleName || (M.meta.player.vehicle ? String(M.meta.player.vehicle).toUpperCase().replace(/_/g, '-') : '')) : '';
-  state.labels = buildLabels(box, airUnits.concat(groundUnits), p.own ? p.own.label : null, ownModel);
+  /* 本机机型按「当前时刻所在那一段」取：换机后本机可能先在地面、后在空中，机型不同。 */
+  const ownPlayerName = (M.meta && M.meta.player && M.meta.player.name) ? String(M.meta.player.name) : '';
+  /* 同一玩家名下有几条不同 uid 的航迹：≥2 条就是他中途换过载具 */
+  multiPlayers = new Set();
+  (function () {
+    const seen = {};
+    for (const u of airUnits.concat(groundUnits)) {
+      if (!u.player) { continue; }
+      const k = String(u.player);
+      seen[k] = seen[k] || {};
+      seen[k][String(u.uid != null ? u.uid : u.key)] = 1;
+    }
+    for (const k of Object.keys(seen)) { if (Object.keys(seen[k]).length >= 2) { multiPlayers.add(k); } }
+  })();
+  const ownSegs = [];
+  for (const u of airUnits.concat(groundUnits)) {
+    if (!u.player || !u.label) { continue; }
+    if (ownPlayerName && ownPlayerName.length >= String(u.player).length &&
+        ownPlayerName.slice(-String(u.player).length) === String(u.player)) {
+      ownSegs.push({ t0: u.t0, endT: u.endT, model: u.label });
+    }
+  }
+  ownSegs.sort((a, b) => a.t0 - b.t0);
+  state.labels = buildLabels(box, airUnits.concat(groundUnits), p.own ? p.own.label : null, ownModel, ownSegs);
 
   state.ready = true;
   window.__ACE_OPTS = state.opts;   /* 排查用：外部可直接改图层开关 */
@@ -957,8 +990,23 @@ function resize() {
 }
 
 function setCamera(mode) {
-  if (state.controls) { state.controls.enabled = (mode === 'free'); }
-  state.camMode = mode || 'follow';
+  const m = mode || 'follow';
+  if (state.controls) {
+    state.controls.enabled = (m === 'free');
+    if (m === 'free') {
+      /* 旋转中心放到当前视线落点：否则 OrbitControls.target 还停在旧值/世界原点，
+       * 开局没跟到玩家时相机会绕原点转，用户看到的是“拖了没反应”。 */
+      if (isFinite(CAMS.fx) && isFinite(CAMS.fy) && isFinite(CAMS.fz)) {
+        state.controls.target.set(CAMS.fx, CAMS.fy, CAMS.fz);
+      } else {
+        const dir = new THREE.Vector3();
+        state.camera.getWorldDirection(dir);
+        state.controls.target.copy(state.camera.position).add(dir.multiplyScalar(20000));
+      }
+      state.controls.update();
+    }
+  }
+  state.camMode = m;
   CAMS.spin = null;          /* 切机位时让环绕/俯视的方位角重新起算 */
   CAMS.init = false;         /* 下一帧直接贴合，不做长距离插值 */
 }
@@ -1350,6 +1398,15 @@ function updateCamera(t, dt) {
   const cam = state.camera, ctl = state.controls;
   const mode = state.camMode;
 
+  /* 自由镜头：相机完全交给 OrbitControls，**不参与**下面的远景/跟随重定位。
+   * 这个判断必须在最前面：开局本机航迹还是 null 时会进“战场全局远景”（CAMS.over），
+   * 那段代码每帧都会把相机拉回地图中心，自由镜头里拖鼠标看不到任何反应
+   * （2026-11-18 用户报：一开始没跟到玩家时自由镜头不起效）。 */
+  if (mode === 'free') {
+    if (ctl) { ctl.enabled = true; ctl.update(); }
+    return;
+  }
+
   /* 拖动进度条会瞬间跨很大时间：这一帧**只做重锚**，不判瞬移、也不保留远景。
    * （否则每次 seek 都会被判成"回机场补给"而跳到全图） */
   let seeked = false;
@@ -1458,9 +1515,6 @@ function updateCamera(t, dt) {
     if (CAMS.spin == null) { CAMS.spin = (state.camMode === 'top') ? 0.6 : 0.9; }
     CAMS.spin += dt * P.drift;
     az = CAMS.spin; el = P.el; rad = P.r;
-  } else if (mode === 'free') {
-    if (ctl) { ctl.enabled = true; ctl.update(); }
-    return;                       /* 自由镜头：相机完全交给 OrbitControls */
   } else {
     fx = CAMS.fx; fy = CAMS.fy; fz = CAMS.fz; az = CAMS.az; el = CAMS.el; rad = CAMS.r;
   }
@@ -1497,7 +1551,10 @@ function updateCamera(t, dt) {
 function groundLabelText(u) {
   const mode = (identityMode && identityMode.labelMode) || 'category';
   if (mode === 'category') { return (u.category || u.label || '').toString().toUpperCase(); }
-  return u.label || '';
+  const base = u.label || '';
+  /* 只有换机玩家（多段航迹）才标玩家名：换机后同一个人在地面段和空中段都对得上 */
+  if (u.player && multiPlayers.has(String(u.player))) { return base ? base + ' · ' + u.player : u.player; }
+  return base;
 }
 
 /* 地面单位取样：n=1 的静态点永远取 0；有同步位置的单位按 1 Hz 阶梯保持，
@@ -1545,6 +1602,9 @@ function buildGroundClusters(t) {
 }
 
 let identityMode = null;          /* 由 render 的 st.identity 每帧更新 */
+/* 换机标记：只有“同一玩家有两段以上不同 uid 航迹”时才在标签上标玩家名，
+   否则满屏玩家名会把标签挤成一团（陆战回放里 100+ 地面单位同时可见）。 */
+let multiPlayers = new Set();
 
 function render(st) {
   if (!state.ready) { return; }
@@ -1697,7 +1757,19 @@ function render(st) {
   if (ident && state.opts.labels !== false) { buildGroundClusters(t); }
   if (ident && state.labels) {
     for (const L of state.labels) {
-      if (!L.u && L.own && ident.own) { if (L.main) { L.main.textContent = ident.own; } else { L.el.textContent = ident.own; } }
+      if (!L.u && L.own && ident.own) {
+        if (L.main) { L.main.textContent = ident.own; } else { L.el.textContent = ident.own; }
+        if (L.sub && L.ownSegs && L.ownSegs.length) {
+          /* 多段同时覆盖当前时刻很常见（坦克停在场上、人已经上飞机）。取“最近开始”的那段，
+             也就是当前实际在用的载具；都结束了就取最后一段。 */
+          let seg = null;
+          for (const g of L.ownSegs) {
+            if (t >= g.t0 && t <= g.endT && (!seg || g.t0 > seg.t0)) { seg = g; }
+          }
+          if (!seg) { for (const g of L.ownSegs) { if (t >= g.t0) { seg = g; } } }
+          if (seg && L.sub.textContent !== seg.model) { L.sub.textContent = seg.model; }
+        }
+      }
       else if (L.u && L.u.squadRank != null && ident.squad && ident.squad[L.u.squadRank - 1]) {
         if (L.main) { L.main.textContent = ident.squad[L.u.squadRank - 1]; }
         else { L.el.textContent = ident.squad[L.u.squadRank - 1]; }

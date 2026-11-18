@@ -11,7 +11,7 @@
   /* 渲染器版本号：改 scene.js 后把它 +1，避免浏览器用缓存的旧模块 */
   /* ⚠ 每次改 three3d/scene.js **必须**把这个数字 +1：它是模块 URL 的版本戳，
    * 不递增的话浏览器会一直用缓存里的旧模块（2026-10-22 踩过：修好的代码在用户那边没生效）。 */
-  var NV = '56';
+  var NV = '58';
 
   function dispatch(name, args) {
     if (real) { return real[name].apply(real, args); }

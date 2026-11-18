@@ -106,6 +106,8 @@
 
 <!-- 自带 zstd 解码：Chromium 的 DecompressionStream 不支持 'zstd' -->
 <script src="vendor/fzstd.min.js"></script>
+<script src="ecs-comps.js"></script>
+<script src="ecs-names.js"></script>
 <script src="wrpl-parse.js"></script>
 <script src="airfields.js"></script>
 <!-- 渲染：three.js 渲染器（ES module，由经典脚本桥 scene3d3-loader.js 动态加载，
@@ -345,8 +347,11 @@
          * 回放自己也解出过一份（ECS 反推），但那份不全（本局 4 条 vs 权威 12 条），以权威版为准。 */
         /* 权威数据里存在同位置重复（典型：`t2_airfield` 与 `t2_airfield_low` 中心重合），
          * 直接全画会"多个跑道叠在一起"。这里按 250 m 去重，同一簇保留更长的那条。 */
+        /* 陆战图的跑道/重生点在底图外（avg_finland：底图内 0 条、底图外 5 条），
+         * 只读 airfields[] 会让陆战图一条跑道都没有。两份合并后再去重。 */
+        var afAll = (tj.airfields || []).concat(tj.airfieldsOutsideBaseMap || []);
         var afs = [];
-        (tj.airfields || []).forEach(function (a) {
+        afAll.forEach(function (a) {
           var c = a.center || [0, 0];
           for (var ai = 0; ai < afs.length; ai++) {
             var q = afs[ai].center || [0, 0];
@@ -357,12 +362,12 @@
           }
           afs.push(a);
         });
-        if ((tj.airfields || []).length !== afs.length) {
-          var dropped = (tj.airfields || []).filter(function (a) {
+        if (afAll.length !== afs.length) {
+          var dropped = afAll.filter(function (a) {
             return !afs.some(function (b) { return b === a; });
           }).map(function (a) { return a.name; });
           console.log('[airfield] 去重 %d → %d（700 m 内视为同一机场，合并/丢弃：%s）',
-            (tj.airfields || []).length, afs.length, dropped.join(', '));
+            afAll.length, afs.length, dropped.join(', '));
         }
         if (afs.length) {
           mission.runways = afs.map(function (a) {
@@ -381,7 +386,7 @@
             return { key: a.name, name: a.name,
                      x: (a.center || [0, 0])[0], y: (a.center || [0, 0])[1], z: a.altM };
           });
-          mission.respawns = (tj.respawns || []).map(function (r) {
+          mission.respawns = (tj.respawns || []).concat(tj.respawnsOutsideBaseMap || []).map(function (r) {
             return { name: r.name, kind: r.kind, x: (r.pos || [0, 0])[0],
                      y: (r.pos || [0, 0])[1], z: r.altM, source: r.source };
           });

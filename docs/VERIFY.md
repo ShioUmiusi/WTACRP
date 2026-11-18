@@ -357,3 +357,34 @@ python tools/check_ace_mission.py --selftest   # 36/36
 - 用交付航迹独立推「协调转弯应有 bank」（`atan(v·ω/g)`）做相关：逐 uid **r≈0（0.001–0.04，个别为负）**，但该方法受 4 Hz 航向量化噪声影响，
   **不足以证明** bank 是"另一个欧拉角"。因此**不声称能证伪**，只记录「语义未闭合、只保证原样渲染」这一已知项。
 
+---
+
+## 变更记录 · 2026-11-16 · `web/wrpl-parse.js` 指纹失效
+
+- 原因：加入 ECS 构造块组件走查（`web/ecs-comps.js` + `web/ecs-names.js`），让坦克/工事/舰船模板也能读出 `uid` / `unit__playerId` / 队别；`buildUidMap` 按模板分流，地面单位按 `groundUid` 绑定玩家。
+- `web/wrpl-parse.js` 指纹：旧 `size 138562 / sha256 前16 e1b06498554d4109` → **新 `size 193103 / sha256 5a7521914c8b1b3c`**（全量 `5a7521914c8b1b3cebb3fad28804b6681bf275f6e818ca276487adef369b03ae`）。
+- 因此**本文档上方 50 项结论全部视为「上一版文件」的结论**，需在新指纹上整份重跑后才可再次引用；重跑前只可作为回归参考。
+- 已做的局部回归（2026-11-16）：`scratch/TEST0.wrpl`、`TEST1.wrpl`、`synthetic.wrpl` 三份回放的 `trackCount / kills / events / shots / missiles / ownSegments / 有名字的空中航迹数` 与改动前一致；`python tools/check_ace_mission.py --selftest` **56/56 通过**（该自测打的是交付 `mission-data.js`，与本改动无关，仅作未波及的旁证）。
+
+---
+
+## 变更记录 · 2026-11-18 · 自由镜头（`free`）在开局远景窗口里无效
+
+- 症状（用户原话）：「如果一开始没有镜头跟随到玩家 自由镜头不起效」。
+- 原因：`three3d/scene.js:updateCamera` 先算「战场全局远景」（`CAMS.over`，开局本机航迹为 `null` 时武装），
+  `if (_over) … else if (mode === 'free')` 的链式判断让远景在同一帧把相机覆写回地图中心，
+  OrbitControls 的拖拽结果下一帧即被冲掉；`setCamera('free')` 也没有把旋转中心放到当前视线落点。
+- 修法：`mode === 'free'` 判断提到函数最前面（远景/跟随/机位全部让位），删掉原来的 free 分支；
+  `setCamera('free')` 把 `controls.target` 置于 `CAMS` 当前焦点（焦点没算出来时按相机朝向推 20 km）。
+- 回归脚本 `tools/freecam_probe.py`（Playwright 真鼠标）。**合成 PointerEvent 驱动不了 OrbitControls**：
+  它的 pointermove/pointerup 挂在 `document` 上并调用 `setPointerCapture`，所以 `browser_eval` 里 dispatch
+  的事件既进不了它的监听器，`setPointerCapture` 还会抛错——早期用合成事件测出的「拖了没反应」是仪器坏，不是产品坏。
+  两个臂：
+  - `gap`：页面刚加载，本机航迹 `null`（本回放 0–147.8 s），`CAMS.over` 已武装；
+  - `control`：`seek(200)` 之后（seek 会清 `CAMS.over`），这个臂必须能动，否则是仪器坏了。
+- A/B 实测（`avg_soviet_range`，1280×800，暂停后同一 `t` 的前后截图差）：
+  - 修前构建（`git show HEAD:three3d/scene.js`）：`gap changed_px=0`（NO EFFECT）、`control=541737`（MOVED）；
+  - 修后构建：`gap=564763`、`control=541271` → **PASS**（脚本退出码 0）。
+- 顺带量到的正常行为（不是回归）：`setCamera('follow')` 会把 `CAMS.init` 置 false 从而**直接贴合**标准追尾机位
+  （实测 `f=[1583,1007.3,-1307]、el=0.55、r=7000`），free→follow 回到的正是这一机位。
+- 本改动只动了相机分支顺序与 `setCamera`；`check_ace_mission.py --selftest` 不打渲染层，未重跑。

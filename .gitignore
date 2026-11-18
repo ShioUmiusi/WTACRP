@@ -3,6 +3,7 @@ dist/
 build/
 dev/
 out/
+scratch/
 node_modules/
 __pycache__/
 *.py[cod]
